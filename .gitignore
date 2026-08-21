@@ -1,0 +1,7 @@
+# Build output. Each plugin directory carries its own copy of these rules as well, since it is a
+# stripped copy of a repository that had them; this one covers the whole tree so a new plugin
+# dropped in here cannot commit its bin folder before anyone notices.
+bin/
+obj/
+.vs/
+*.user
