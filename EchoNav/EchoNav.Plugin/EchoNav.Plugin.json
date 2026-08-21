@@ -1,0 +1,13 @@
+{
+  "Author": "jFray",
+  "Name": "EchoNav",
+  "InternalName": "EchoNav.Plugin",
+  "AssemblyVersion": "1.0.0.5",
+  "Description": "Lists the Critical Encounters and FATEs running in Occult Crescent: North Horn and walks you to any of them with a single click, choosing between walking, an aetheryte hop and Occult Return. Also tracks the pot cycle, keeps your knowledge-crystal buffs topped up, and can step around monsters and pick up coffers on the way. Does nothing outside North Horn.",
+  "Punchline": "See what's up in North Horn, then click once to get there.",
+  "ApplicableVersion": "any",
+  "Tags": [ "fate", "navigation", "occult crescent", "north horn", "field operations" ],
+  "CategoryTags": [ "Utility" ],
+  "AcceptsFeedback": false,
+  "DalamudApiLevel": 15
+}

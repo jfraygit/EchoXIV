@@ -1,0 +1,8 @@
+bin/
+obj/
+.vs/
+*.user
+# Where tools\release\package.ps1 builds the zip. The copy that matters is the one staged into
+# EchoMix-Repo, which has its own history; a 6 MB artifact per release in here would only be a
+# second, divergent record of the same thing.
+artifacts/
