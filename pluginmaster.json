@@ -1,0 +1,143 @@
+[
+  {
+    "Author": "jFray",
+    "Name": "EchoMix",
+    "InternalName": "EchoMix.Plugin",
+    "AssemblyVersion": "1.3.1.2",
+    "Description": "An interactive DJ deck with live mixing tools, custom playlists, and a synced listener mode with an audio visualizer.",
+    "Punchline": "Spin tracks and let the party sync in.",
+    "LastUpdate": 1787025230,
+    "Changelog": "Added a Web Listen Link - broadcasting hosts can generate a public link so anyone can tune into a live show right in their browser, no EchoMix required.\nAdded /emix - jumps straight to the DJ Deck view, no matter what's currently on screen, the same way /el already does for the Listener view.\nEchoMix no longer opens or draws its window at the title screen or character select - it appears again once actually logged into a character, matching the rest of the Echo plugin suite.\nGenres now capitalize every word instead of just the first one, so \"heavy metal\" displays as \"Heavy Metal\" - applies to genres already saved on an existing profile too, not just newly-typed ones.",
+    "ApplicableVersion": "any",
+    "RepoUrl": "https://github.com/jfraygit/EchoXIV/tree/main/EchoMix",
+    "Tags": [
+      "dj",
+      "music",
+      "audio",
+      "party"
+    ],
+    "CategoryTags": [
+      "UI",
+      "Sound"
+    ],
+    "DalamudApiLevel": 15,
+    "IconUrl": "https://raw.githubusercontent.com/jfraygit/EchoXIV/main/icons/echomix-icon.png",
+    "DownloadLinkInstall": "https://github.com/jfraygit/EchoXIV/releases/download/latest/EchoMix-latest.zip",
+    "DownloadLinkUpdate": "https://github.com/jfraygit/EchoXIV/releases/download/latest/EchoMix-latest.zip",
+    "DownloadLinkTesting": "https://github.com/jfraygit/EchoXIV/releases/download/latest/EchoMix-latest.zip"
+  },
+  {
+    "Author": "jFray",
+    "Name": "EchoSim",
+    "InternalName": "EchoSim.Plugin",
+    "AssemblyVersion": "1.0.2.6",
+    "Description": "Simulates a full-length fight for your job using your own gear or a best-in-slot preset, then reports the DPS and shows exactly where it came from. Compares gear, melds and consumables, checks your openers and burst windows, and analyses an FFLogs report against the simulated ceiling. Kills on supported encounters can be scored and submitted to per-job leaderboards.",
+    "Punchline": "Simulate your rotation, then see how your real kills measure up.",
+    "LastUpdate": 1787083416,
+    "Changelog": "Ninja was losing an ability every cycle. A weave was refused whenever it came off cooldown during an animation lock, so the window went unused - worth about 0.7% of the job's damage. Ninja scores on the leaderboards have been rescored against the corrected ceiling.",
+    "ApplicableVersion": "any",
+    "RepoUrl": "https://github.com/jfraygit/EchoXIV/tree/main/EchoSim",
+    "Tags": [
+      "dps",
+      "simulator",
+      "rotation",
+      "theorycrafting",
+      "parse",
+      "leaderboard"
+    ],
+    "CategoryTags": [
+      "Utility",
+      "Jobs"
+    ],
+    "DalamudApiLevel": 15,
+    "IconUrl": "https://raw.githubusercontent.com/jfraygit/EchoXIV/main/icons/echosim-icon.png",
+    "DownloadLinkInstall": "https://github.com/jfraygit/EchoXIV/releases/download/latest/EchoSim-latest.zip",
+    "DownloadLinkUpdate": "https://github.com/jfraygit/EchoXIV/releases/download/latest/EchoSim-latest.zip",
+    "DownloadLinkTesting": "https://github.com/jfraygit/EchoXIV/releases/download/latest/EchoSim-latest.zip"
+  },
+  {
+    "Author": "jFray",
+    "Name": "EchoNav",
+    "InternalName": "EchoNav.Plugin",
+    "AssemblyVersion": "1.0.0.5",
+    "Description": "Lists the Critical Encounters and FATEs running in Occult Crescent: North Horn and walks you to any of them with a single click, choosing between walking, an aetheryte hop and Occult Return. Also tracks the pot cycle, keeps your knowledge-crystal buffs topped up, and can step around monsters and pick up coffers on the way. Does nothing outside North Horn.",
+    "Punchline": "See what's up in North Horn, then click once to get there.",
+    "LastUpdate": 1786806827,
+    "Changelog": "The aetheryte network now works whatever language you play in. Playing in anything but English, no shard was ever found and EchoNav quietly walked everywhere instead.\nTravelling to a shard you have never stood at yourself now works. It used to need you to have visited a shard before it could take you there.\nThe window no longer appears on the title and character select screens.",
+    "ApplicableVersion": "any",
+    "RepoUrl": "https://github.com/jfraygit/EchoXIV/tree/main/EchoNav",
+    "Tags": [
+      "fate",
+      "navigation",
+      "occult crescent",
+      "north horn",
+      "field operations"
+    ],
+    "CategoryTags": [
+      "Utility"
+    ],
+    "DalamudApiLevel": 15,
+    "IconUrl": "https://raw.githubusercontent.com/jfraygit/EchoXIV/main/icons/echonav-icon.png",
+    "DownloadLinkInstall": "https://github.com/jfraygit/EchoXIV/releases/download/latest/EchoNav-latest.zip",
+    "DownloadLinkUpdate": "https://github.com/jfraygit/EchoXIV/releases/download/latest/EchoNav-latest.zip",
+    "DownloadLinkTesting": "https://github.com/jfraygit/EchoXIV/releases/download/latest/EchoNav-latest.zip"
+  },
+  {
+    "Author": "jFray",
+    "Name": "EchoGlam",
+    "InternalName": "EchoGlam.Plugin",
+    "AssemblyVersion": "1.1.0.3",
+    "Description": "Dress your character in any item in the game from a searchable in-game wardrobe, dye every slot, edit full appearance and save named outfits. Then publish the look to a community catalogue you can browse, filter, vote on and favourite without leaving the game - and put anyone else's glamour on with one click, with a revert that is always one click away. No other plugins required.",
+    "Punchline": "Build a glamour, share it, and wear anyone else's.",
+    "LastUpdate": 1787333283,
+    "Changelog": "Bring your Glamourer designs across. Copy one in Glamourer, then press Paste Design in the Outfits pane.\nCopy Design puts what you are wearing on the clipboard, ready to paste into Glamourer.\nAn imported outfit dresses you from bare, so the slots the design leaves empty are emptied rather than left as they were.\nA design that hides your headgear or your weapon is imported hidden too.\nGlasses, advanced dyes and Penumbra settings cannot come across. EchoGlam tells you what a design was carrying before you save it.\nHide now works both ways. Press it again to put back whatever was in the slot.",
+    "ApplicableVersion": "any",
+    "RepoUrl": "https://github.com/jfraygit/EchoXIV/tree/main/EchoGlam",
+    "Tags": [
+      "glamour",
+      "fashion",
+      "gear",
+      "wardrobe",
+      "outfit",
+      "dye",
+      "catalogue"
+    ],
+    "CategoryTags": [
+      "Utility"
+    ],
+    "DalamudApiLevel": 15,
+    "IconUrl": "https://raw.githubusercontent.com/jfraygit/EchoXIV/main/icons/echoglam-icon.png",
+    "DownloadLinkInstall": "https://github.com/jfraygit/EchoXIV/releases/download/latest/EchoGlam-latest.zip",
+    "DownloadLinkUpdate": "https://github.com/jfraygit/EchoXIV/releases/download/latest/EchoGlam-latest.zip",
+    "DownloadLinkTesting": "https://github.com/jfraygit/EchoXIV/releases/download/latest/EchoGlam-latest.zip"
+  },
+  {
+    "Author": "jFray",
+    "Name": "EchoRoleplay",
+    "InternalName": "EchoRoleplay.Plugin",
+    "AssemblyVersion": "1.0.0.5",
+    "Description": "Write a full roleplay profile for your character - name, appearance, backstory, hooks and rumours - and read anyone else's by hovering them. Set statuses that hang under your character for others to read at a glance, and keep private notes on everyone you have met.",
+    "Punchline": "A roleplay profile for your character, readable at a glance.",
+    "LastUpdate": 1787080420,
+    "Changelog": "",
+    "ApplicableVersion": "any",
+    "RepoUrl": "https://github.com/jfraygit/EchoXIV/tree/main/EchoRoleplay",
+    "Tags": [
+      "roleplay",
+      "rp",
+      "profile",
+      "character",
+      "status",
+      "tooltip",
+      "social"
+    ],
+    "CategoryTags": [
+      "Social"
+    ],
+    "DalamudApiLevel": 15,
+    "IconUrl": "https://raw.githubusercontent.com/jfraygit/EchoXIV/main/icons/echorp-icon.png",
+    "DownloadLinkInstall": "https://github.com/jfraygit/EchoXIV/releases/download/latest/EchoRoleplay-latest.zip",
+    "DownloadLinkUpdate": "https://github.com/jfraygit/EchoXIV/releases/download/latest/EchoRoleplay-latest.zip",
+    "DownloadLinkTesting": "https://github.com/jfraygit/EchoXIV/releases/download/latest/EchoRoleplay-latest.zip"
+  }
+]
