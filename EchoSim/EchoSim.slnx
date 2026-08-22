@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="EchoSim.Plugin/EchoSim.Plugin.csproj" />
+  <Project Path="EchoSim.Shared/EchoSim.Shared.csproj" />
+</Solution>

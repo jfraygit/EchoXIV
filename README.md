@@ -7,6 +7,7 @@ Source for the EchoXIV plugins for FINAL FANTASY XIV, one directory each.
 | [EchoGlam](EchoGlam/) | Build glamours from every item in the game, save them as outfits, and publish them to a catalogue anybody can wear from |
 | [EchoNav](EchoNav/) | Lists the Critical Encounters and FATEs running in Occult Crescent: North Horn and walks you to any of them |
 | [EchoRoleplay](EchoRoleplay/) | A roleplay profile for your character, readable by anybody who hovers them, with statuses and private notes |
+| [EchoSim](EchoSim/) | Simulates a full fight for twenty-one jobs, compares gear and melds against the result, and scores your real kills on per-job leaderboards |
 
 More will appear here as they are opened up.
 
@@ -27,9 +28,6 @@ for each plugin with what it does and what it looks like.
 The source for each shipped release, kept in step with the binary that was published. Each plugin
 directory carries its own `LICENSE`, `README.md` and `THIRD-PARTY-NOTICES.md`, because the plugins do
 not all depend on the same third-party work and the notices belong with the code they describe.
-
-Comments are terse by house style: a plain sentence on a type or member, and nothing that reads like
-an essay. That is deliberate rather than an omission.
 
 ## Licence
 
