@@ -5,6 +5,7 @@ Source for the EchoXIV plugins for FINAL FANTASY XIV, one directory each.
 | | |
 |---|---|
 | [EchoGlam](EchoGlam/) | Build glamours from every item in the game, save them as outfits, and publish them to a catalogue anybody can wear from |
+| [EchoMix](EchoMix/) | A two-deck DJ booth with live mixing, a playlist library, and broadcasts other players can tune into in-game or from a browser |
 | [EchoNav](EchoNav/) | Lists the Critical Encounters and FATEs running in Occult Crescent: North Horn and walks you to any of them |
 | [EchoRoleplay](EchoRoleplay/) | A roleplay profile for your character, readable by anybody who hovers them, with statuses and private notes |
 | [EchoSim](EchoSim/) | Simulates a full fight for twenty-one jobs, compares gear and melds against the result, and scores your real kills on per-job leaderboards |
