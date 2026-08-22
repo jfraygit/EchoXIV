@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="EchoRoleplay.Plugin/EchoRoleplay.Plugin.csproj" />
+  <Project Path="EchoRoleplay.Shared/EchoRoleplay.Shared.csproj" />
+</Solution>

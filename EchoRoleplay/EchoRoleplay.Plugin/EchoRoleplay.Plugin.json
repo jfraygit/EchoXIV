@@ -1,0 +1,13 @@
+{
+  "Author": "jFray",
+  "Name": "EchoRoleplay",
+  "InternalName": "EchoRoleplay.Plugin",
+  "AssemblyVersion": "1.0.0.5",
+  "Description": "Write a full roleplay profile for your character - name, appearance, backstory, hooks and rumours - and read anyone else's by hovering them. Set statuses that hang under your character for others to read at a glance, and keep private notes on everyone you have met.",
+  "Punchline": "A roleplay profile for your character, readable at a glance.",
+  "ApplicableVersion": "any",
+  "Tags": [ "roleplay", "rp", "profile", "character", "status", "tooltip", "social" ],
+  "CategoryTags": [ "Social" ],
+  "AcceptsFeedback": false,
+  "DalamudApiLevel": 15
+}
