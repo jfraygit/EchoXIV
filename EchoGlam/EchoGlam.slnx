@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="EchoGlam.Plugin/EchoGlam.Plugin.csproj" />
+  <Project Path="EchoGlam.Shared/EchoGlam.Shared.csproj" />
+</Solution>
