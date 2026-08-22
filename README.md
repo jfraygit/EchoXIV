@@ -5,6 +5,7 @@ Source for the EchoXIV plugins for FINAL FANTASY XIV, one directory each.
 | | |
 |---|---|
 | [EchoNav](EchoNav/) | Lists the Critical Encounters and FATEs running in Occult Crescent: North Horn and walks you to any of them |
+| [EchoRoleplay](EchoRoleplay/) | A roleplay profile for your character, readable by anybody who hovers them, with statuses and private notes |
 
 More will appear here as they are opened up.
 
