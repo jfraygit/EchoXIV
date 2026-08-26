@@ -9,7 +9,7 @@
     <Platforms>x64</Platforms>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <AppendPlatformToOutputPath>false</AppendPlatformToOutputPath>
-    <Version>1.1.0.3</Version>
+    <Version>1.1.0.4</Version>
     <AssemblyName>EchoGlam.Plugin</AssemblyName>
     <RootNamespace>EchoGlam</RootNamespace>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>

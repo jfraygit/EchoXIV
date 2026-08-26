@@ -55,12 +55,12 @@ public sealed class FriendContextMenu : IDisposable
         });
     }
 
-    /// "Name@HomeWorld" for whoever the menu is about.
+    /// "Name@HomeWorld" for whoever the menu is about, or empty when the menu is not about anybody.
     private static string KeyFor(MenuTargetDefault target)
     {
-        var name = target.TargetName;
-        var world = target.TargetHomeWorld.ValueNullable?.Name.ExtractText() ?? string.Empty;
+        if (target.TargetHomeWorld.ValueNullable is not { IsPublic: true } world)
+            return string.Empty;
 
-        return CharacterHash.Key(name, world);
+        return CharacterHash.Key(target.TargetName, world.Name.ExtractText());
     }
 }

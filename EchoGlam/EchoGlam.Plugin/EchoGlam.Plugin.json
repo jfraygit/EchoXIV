@@ -2,7 +2,7 @@
   "Author": "jFray",
   "Name": "EchoGlam",
   "InternalName": "EchoGlam.Plugin",
-  "AssemblyVersion": "1.1.0.3",
+  "AssemblyVersion": "1.1.0.4",
   "Description": "Dress your character in any item in the game from a searchable in-game wardrobe, dye every slot, edit full appearance and save named outfits. Then publish the look to a community catalogue you can browse, filter, vote on and favourite without leaving the game - and put anyone else's glamour on with one click, with a revert that is always one click away. No other plugins required.",
   "Punchline": "Build a glamour, share it, and wear anyone else's.",
   "ApplicableVersion": "any",

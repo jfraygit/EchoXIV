@@ -10,6 +10,12 @@ public static class ChangelogData
     /// not read", and lighting it up for a build that was never published teaches people to ignore it.
     public static readonly ChangelogEntry[] Entries =
     [
+        new("1.1.0.4",
+        [
+            "Add EchoGlam Friend no longer appears when you right-click a fashion accessory, or "
+            + "anything else that is not a person.",
+        ]),
+
         new("1.1.0.3",
         [
             "Bring your Glamourer designs across. Copy one in Glamourer, then press Paste Design in "
