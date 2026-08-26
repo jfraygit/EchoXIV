@@ -2,7 +2,7 @@
   "Author": "jFray",
   "Name": "EchoSim",
   "InternalName": "EchoSim.Plugin",
-  "AssemblyVersion": "1.0.2.6",
+  "AssemblyVersion": "1.0.2.7",
   "Description": "Simulates a full-length fight for your job using your own gear or a best-in-slot preset, then reports the DPS and shows exactly where it came from. Compares gear, melds and consumables, checks your openers and burst windows, and analyses an FFLogs report against the simulated ceiling. Kills on supported encounters can be scored and submitted to per-job leaderboards.",
   "ApplicableVersion": "any",
   "RepoUrl": "https://echoxiv.com",

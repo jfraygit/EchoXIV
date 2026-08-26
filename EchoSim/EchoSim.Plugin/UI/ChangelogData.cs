@@ -8,6 +8,10 @@ public static class ChangelogData
 {
     public static readonly ChangelogEntry[] Entries =
     [
+        new("1.0.2.7",
+        [
+            "Dancer leaderboard scores were coming out about six and a half points too high, because Technical Finish was being counted twice on every use.",
+        ]),
         new("1.0.2.6",
         [
             "Ninja was losing an ability every cycle. A weave was refused whenever it came off cooldown during an animation lock, so the window went unused - worth about 0.7% of the job's damage. Ninja scores on the leaderboards have been rescored against the corrected ceiling.",
