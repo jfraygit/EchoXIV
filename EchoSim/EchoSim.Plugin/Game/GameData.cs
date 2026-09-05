@@ -1,3 +1,4 @@
+using Dalamud.Game;
 using Dalamud.Interface.Textures;
 using Dalamud.Interface.Textures.TextureWraps;
 using EchoSim.Sim;
@@ -217,7 +218,7 @@ public static class GameData
 
         try
         {
-            foreach (var action in Plugin.DataManager.GetExcelSheet<LuminaAction>())
+            foreach (var action in Plugin.DataManager.GetExcelSheet<LuminaAction>(ClientLanguage.English))
             {
                 var name = action.Name.ExtractText();
                 if (string.IsNullOrEmpty(name) || action.Icon == 0)
@@ -263,7 +264,7 @@ public static class GameData
             Plugin.Log.Warning($"EchoSim: no icon for {string.Join(", ", missing)}");
     }
 
-    /// The in-game name of an action by its id.
+    /// The in-game name of an action by its id, in English whatever the client is running.
     public static string ActionName(uint actionId)
     {
         if (actionId == 0)
@@ -271,7 +272,8 @@ public static class GameData
 
         try
         {
-            return Plugin.DataManager.GetExcelSheet<LuminaAction>().TryGetRow(actionId, out var action)
+            return Plugin.DataManager.GetExcelSheet<LuminaAction>(ClientLanguage.English)
+                       .TryGetRow(actionId, out var action)
                 ? action.Name.ExtractText()
                 : string.Empty;
         }

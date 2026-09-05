@@ -8,6 +8,10 @@ public static class ChangelogData
 {
     public static readonly ChangelogEntry[] Entries =
     [
+        new("1.0.2.8",
+        [
+            "EchoSim now reads action names in English whatever language you play in. Playing in anything else, most of your rotation went unrecognised - which left leaderboard scores badly inflated and action icons missing.",
+        ]),
         new("1.0.2.7",
         [
             "Dancer leaderboard scores were coming out about six and a half points too high, because Technical Finish was being counted twice on every use.",
