@@ -46,6 +46,10 @@ public sealed class Plugin : IDalamudPlugin
     /// Form/text-input state, shared for the same reason Router is - see EchoMixEditState.
     public EchoMixEditState EditState { get; } = new();
 
+    /// Badge artwork, owned here rather than by the screen that draws it so there is one cache and one
+    /// disposal point regardless of how many places end up showing a badge.
+    public UI.Cosmetics.BadgeTextures BadgeTextures { get; } = new();
+
     public readonly WindowSystem WindowSystem = new("EchoMix");
     private readonly DjDeckWindow djDeckWindow;
     public DjDeckWindow DjDeckWindow => djDeckWindow;
@@ -177,6 +181,7 @@ public sealed class Plugin : IDalamudPlugin
         CommandManager.RemoveHandler(ListenerCommandName);
         CommandManager.RemoveHandler(DeckCommandName);
         djDeckWindow.Dispose();
+        BadgeTextures.Dispose();
 
         AudioHostClient.Send(MessageType.Shutdown, new object());
         AudioHostClient.Dispose();

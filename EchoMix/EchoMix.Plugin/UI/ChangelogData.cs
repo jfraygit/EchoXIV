@@ -12,6 +12,18 @@ public static class ChangelogData
 {
     public static readonly ChangelogEntry[] Entries =
     {
+        new("2.0.0.2", new[]
+        {
+            new ChangelogGroup("Added", new[]
+            {
+                "Badges on DJ profiles, under the profile picture. Hover one to see what it is for and the date you got it.",
+                "The EchoMix 1.0 badge, for every DJ who had a listing before this release. It cannot be earned after that.",
+            }),
+            new ChangelogGroup("Changed", new[]
+            {
+                "The DJ list is split into pages of nine, or six while the menu is open.",
+            }),
+        }),
         new("2.0.0.1", new[]
         {
             new ChangelogGroup("Added", new[]

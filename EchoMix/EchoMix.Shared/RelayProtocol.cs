@@ -536,6 +536,16 @@ public sealed class SavedVenueDto
     public bool Subdivision { get; set; }
 }
 
+/// One badge granted to a DJ, as shown on their profile page.
+public sealed class DjBadgeDto
+{
+    /// Everyone who had a listing before EchoMix 2.0.
+    public const string FounderOneOh = "founder-1.0";
+
+    public string Id { get; set; } = string.Empty;
+    public DateTime AwardedAtUtc { get; set; }
+}
+
 /// One DJ List card, as shown in the browse grid - see RelayServer's DJ profile handlers.
 public sealed class DjProfileSummaryDto
 {
@@ -632,6 +642,10 @@ public sealed class DjProfileDetailDto
 
     /// This DJ's all-time show statistics, or null if they have never hosted a qualifying show.
     public DjStatTotalsDto? Stats { get; set; }
+
+    /// Badges this DJ has been granted, oldest first - sorted by the relay so two clients can never disagree
+    /// about the order and a tooltip cannot move between fetches.
+    public List<DjBadgeDto> Badges { get; set; } = new();
 
     /// Whether LinkedCharacterNames should also render on the public-facing part of the profile page (an
     /// "also seen as" line) for anyone who isn't the owner - linking itself is never hidden from the owner,

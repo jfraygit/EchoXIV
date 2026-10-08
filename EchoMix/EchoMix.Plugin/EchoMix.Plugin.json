@@ -2,7 +2,7 @@
   "Author": "jFray",
   "Name": "EchoMix",
   "InternalName": "EchoMix.Plugin",
-  "AssemblyVersion": "2.0.0.1",
+  "AssemblyVersion": "2.0.0.2",
   "Description": "An interactive DJ deck with live mixing tools, custom playlists, and a synced listener mode with an audio visualizer.",
   "Punchline": "Spin tracks and let the party sync in.",
   "ApplicableVersion": "any",

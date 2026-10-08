@@ -52,7 +52,7 @@ public sealed class DjProfileSection
             }
 
             DrawHeader(sample, isSample);
-            Surfaces.Gap(Metrics.Xxl);
+            DrawBadges(sample);
             DrawAvailability(sample);
             Surfaces.Gap(Metrics.Xxl);
 
@@ -92,7 +92,8 @@ public sealed class DjProfileSection
         }
 
         DrawHeader(profile, isSample);
-        Surfaces.Gap(Metrics.Xxl);
+
+        DrawBadges(profile);
 
         DrawAvailability(profile);
 
@@ -112,6 +113,78 @@ public sealed class DjProfileSection
 
         plugin.DjDeckWindow.DrawLegacyDjProfileReportPopup(profile.Id);
         return true;
+    }
+
+    /// What this DJ has been granted, as a row of small marks under their picture.
+    private void DrawBadges(DjProfileDetailDto profile)
+    {
+        if (profile.Badges.Count == 0)
+        {
+            Surfaces.Gap(Metrics.Xxl);
+            return;
+        }
+
+        ImGui.SetCursorPosY(ImGui.GetCursorPosY() - ImGui.GetStyle().ItemSpacing.Y);
+
+        var size = MathF.Round(Metrics.ControlXl);
+        var gap = Metrics.Md;
+        var indent = Metrics.Xxl;
+        var width = MathF.Max(size, Surfaces.ContentWidth - indent);
+
+        var drawList = ImGui.GetWindowDrawList();
+        var origin = Chrome.Snap(ImGui.GetCursorScreenPos() + new Vector2(indent, 0f));
+
+        var x = 0f;
+        var y = 0f;
+        var drawn = 0;
+
+        for (var i = 0; i < profile.Badges.Count; i++)
+        {
+            var badge = profile.Badges[i];
+
+            if (BadgeCatalog.Find(badge.Id) is not { } entry)
+                continue;
+
+            if (x > 0f && x + size > width)
+            {
+                x = 0f;
+                y += size + gap;
+            }
+
+            var pos = Chrome.Snap(new Vector2(origin.X + x, origin.Y + y));
+            var box = new Vector2(size, size);
+
+            ImGui.SetCursorScreenPos(pos);
+            ImGui.InvisibleButton($"##v2badge{i}", box);
+            var hovered = ImGui.IsItemHovered();
+
+            if (plugin.BadgeTextures.Get(entry.ResourceName) is { } texture)
+            {
+                drawList.AddImage(texture.Handle, pos, pos + box, Vector2.Zero, Vector2.One,
+                    ImGui.GetColorU32(Semantic.Alpha(Vector4.One, hovered ? 1f : 0.88f)));
+            }
+            else
+            {
+                drawList.AddRectFilled(pos, pos + box,
+                    ImGui.GetColorU32(Elevation.Sunken), Metrics.RadiusSoft);
+            }
+
+            if (hovered)
+            {
+                var awarded = badge.AwardedAtUtc.ToLocalTime().ToString("d MMM yyyy", CultureInfo.InvariantCulture);
+                Tip.Hovered(entry.Title, $"{entry.Description}\n\nObtained {awarded}");
+            }
+
+            x += size + gap;
+            drawn++;
+        }
+
+        if (drawn == 0)
+            return;
+
+        ImGui.SetCursorScreenPos(origin - new Vector2(indent, 0f));
+        ImGui.Dummy(new Vector2(Surfaces.ContentWidth, y + size));
+        Surfaces.Gap(Metrics.Sm);
     }
 
     /// This DJ's all-time numbers, as a strip of tiles.

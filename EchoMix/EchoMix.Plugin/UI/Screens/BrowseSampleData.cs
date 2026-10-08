@@ -232,10 +232,21 @@ internal static class BrowseSampleData
             });
         }
 
+        var badges = new List<DjBadgeDto>();
+        if (seed % 4 != 1)
+        {
+            badges.Add(new DjBadgeDto
+            {
+                Id = DjBadgeDto.FounderOneOh,
+                AwardedAtUtc = new DateTime(2026, 1 + (seed % 9), 1 + (seed % 27), 0, 0, 0, DateTimeKind.Utc),
+            });
+        }
+
         return new DjProfileDetailDto
         {
             Id = summary.Id,
             DjName = summary.DjName,
+            Badges = badges,
             Bio = summary.Bio,
             Genres = new List<string>(summary.Genres),
             SavedVenues = venues,

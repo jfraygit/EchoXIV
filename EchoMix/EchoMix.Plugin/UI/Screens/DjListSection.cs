@@ -27,6 +27,17 @@ public sealed class DjListSection
     private bool requested;
     private long lastAutoRefresh;
 
+    /// Which page of the grid is showing, and the filter state it was chosen under.
+    private int page;
+    private string pagedGenre = string.Empty;
+    private string pagedSearch = string.Empty;
+
+    /// How far the grid still has to travel to reach its resting place, in pixels, eased to zero.
+    private float pageSlide;
+
+    /// Rows per page.
+    private const int GridRows = 3;
+
     /// How long an automatic re-fetch waits before it is willing to go out again.
     private const long AutoRefreshThrottleMs = 10_000;
 
@@ -110,7 +121,16 @@ public sealed class DjListSection
 
         RefreshGenreOptions(snapshot);
 
+        if (!string.Equals(pagedGenre, genreFilter, StringComparison.Ordinal)
+            || !string.Equals(pagedSearch, search, StringComparison.Ordinal))
+        {
+            pagedGenre = genreFilter;
+            pagedSearch = search;
+            page = 0;
+        }
+
         var matches = Filter(snapshot.Profiles);
+
         DrawListHeader(matches.Count == 1 ? "1 DJ" : $"{matches.Count} DJs");
         Surfaces.Gap(Metrics.Md);
 
@@ -120,34 +140,125 @@ public sealed class DjListSection
             return;
         }
 
-        DrawProfileGrid(matches, isSample);
+        var columns = GridColumns(Surfaces.ContentWidth);
+        var pageSize = columns * GridRows;
+        var pages = Math.Max(1, (matches.Count + pageSize - 1) / pageSize);
+
+        page = Math.Clamp(page, 0, pages - 1);
+
+        var start = page * pageSize;
+        var pageItems = matches.GetRange(start, Math.Min(pageSize, matches.Count - start));
+
+        pageSlide = Motion.Approach(pageSlide, 0f, Motion.SpeedFast);
+        if (MathF.Abs(pageSlide) < 0.5f)
+            pageSlide = 0f;
+
+        DrawProfileGrid(pageItems, columns, pages > 1 ? GridRows : 0, isSample);
+
+        if (pages > 1)
+        {
+            Surfaces.Gap(Metrics.Lg);
+            DrawPager(pages);
+        }
+    }
+
+    /// How many cards fit across `width`.
+    private static int GridColumns(float width)
+    {
+        var minCardWidth = 236f * Metrics.Scale;
+        return Math.Clamp((int)MathF.Floor((width + Metrics.Lg) / (minCardWidth + Metrics.Lg)), 1, 4);
+    }
+
+    /// Prev and next around the current page, centred under the grid.
+    private void DrawPager(int pages)
+    {
+        var buttonSize = MathF.Round(Metrics.ControlSm);
+        var label = $"Page {page + 1} of {pages}";
+
+        float labelWidth;
+        using (TypeScale.Caption())
+            labelWidth = ImGui.CalcTextSize(label).X;
+
+        var width = Surfaces.ContentWidth;
+        var gap = Metrics.Lg;
+        var padding = new Vector2(Metrics.Lg, Metrics.Sm);
+        var content = (buttonSize * 2f) + labelWidth + (gap * 2f);
+        var rowHeight = MathF.Round(buttonSize + (padding.Y * 2f));
+
+        var origin = Chrome.Snap(ImGui.GetCursorScreenPos());
+        var left = MathF.Round(origin.X + MathF.Max(0f, (width - content) * 0.5f));
+        var buttonY = origin.Y + padding.Y;
+        var drawList = ImGui.GetWindowDrawList();
+
+        var troughMin = Chrome.Snap(new Vector2(left - padding.X, origin.Y));
+        var troughMax = troughMin + new Vector2(content + (padding.X * 2f), rowHeight);
+        drawList.AddRectFilled(troughMin, troughMax,
+            ImGui.GetColorU32(Semantic.Alpha(Elevation.Surface, 0.55f)), Metrics.Pill(rowHeight));
+
+        ImGui.SetCursorScreenPos(new Vector2(left, buttonY));
+        if (Fields.IconButton("##v2DjPagePrev", FontAwesomeIcon.ChevronLeft, buttonSize,
+                "Previous Page", string.Empty, page > 0))
+        {
+            GoToPage(page - 1);
+        }
+
+        using (TypeScale.Caption())
+            Chrome.Text(drawList,
+                Chrome.CenterY(left + buttonSize + gap, buttonY, buttonSize, ImGui.GetTextLineHeight()),
+                ImGui.GetColorU32(Semantic.TextSecondary), label);
+
+        ImGui.SetCursorScreenPos(new Vector2(left + buttonSize + gap + labelWidth + gap, buttonY));
+        if (Fields.IconButton("##v2DjPageNext", FontAwesomeIcon.ChevronRight, buttonSize,
+                "Next Page", string.Empty, page + 1 < pages))
+        {
+            GoToPage(page + 1);
+        }
+
+        ImGui.SetCursorScreenPos(origin);
+        ImGui.Dummy(new Vector2(width, rowHeight));
+    }
+
+    private void GoToPage(int next)
+    {
+        var direction = next > page ? 1f : -1f;
+        pageSlide = direction * (Surfaces.ContentWidth * 0.25f);
+
+        page = next;
+
+        ImGui.SetScrollY(0f);
     }
 
     /// The DJ list as a grid of cards.
-    private void DrawProfileGrid(List<DjProfileSummaryDto> matches, bool isSample)
+    private void DrawProfileGrid(List<DjProfileSummaryDto> matches, int columns, int minRows, bool isSample)
     {
         var width = Surfaces.ContentWidth;
         var gap = Metrics.Lg;
-        var minCardWidth = 236f * Metrics.Scale;
 
-        var columns = Math.Clamp((int)MathF.Floor((width + gap) / (minCardWidth + gap)), 1, 4);
         var cardWidth = MathF.Round((width - (gap * (columns - 1))) / columns);
         var cardHeight = CardHeight();
 
         var origin = Chrome.Snap(ImGui.GetCursorScreenPos());
-        var rows = (matches.Count + columns - 1) / columns;
+        var rows = Math.Max((matches.Count + columns - 1) / columns, minRows);
+        var height = (rows * cardHeight) + ((rows - 1) * gap);
+
+        var sliding = pageSlide != 0f;
+        if (sliding)
+            ImGui.PushClipRect(origin, origin + new Vector2(width, height), true);
 
         for (var i = 0; i < matches.Count; i++)
         {
-            ImGui.SetCursorScreenPos(new Vector2(
-                origin.X + ((i % columns) * (cardWidth + gap)),
-                origin.Y + ((i / columns) * (cardHeight + gap))));
+            ImGui.SetCursorScreenPos(Chrome.Snap(new Vector2(
+                origin.X + pageSlide + ((i % columns) * (cardWidth + gap)),
+                origin.Y + ((i / columns) * (cardHeight + gap)))));
 
             DrawProfileCard(matches[i], cardWidth, cardHeight, isSample);
         }
 
+        if (sliding)
+            ImGui.PopClipRect();
+
         ImGui.SetCursorScreenPos(origin);
-        ImGui.Dummy(new Vector2(width, (rows * cardHeight) + ((rows - 1) * gap)));
+        ImGui.Dummy(new Vector2(width, height));
     }
 
     private static float CardAvatarSize() => MathF.Round(68f * Metrics.Scale);

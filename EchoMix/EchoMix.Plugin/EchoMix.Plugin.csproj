@@ -9,7 +9,7 @@
     <PlatformTarget>x64</PlatformTarget>
     <Platforms>x64</Platforms>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
-    <Version>2.0.0.1</Version>
+    <Version>2.0.0.2</Version>
     <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
   </PropertyGroup>
 
@@ -58,6 +58,10 @@
   <ItemGroup>
     <None Include="EchoMix.Plugin.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="images\icon.png" CopyToOutputDirectory="PreserveNewest" />
+
+    <EmbeddedResource Include="images\badges\founder-1.0.png">
+      <LogicalName>EchoMix.Plugin.Badges.founder-1.0.png</LogicalName>
+    </EmbeddedResource>
   </ItemGroup>
 
   <Target Name="CopyAudioHostOutput" AfterTargets="Build">
