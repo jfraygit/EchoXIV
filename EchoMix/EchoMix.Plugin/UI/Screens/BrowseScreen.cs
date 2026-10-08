@@ -117,6 +117,9 @@ public sealed class BrowseScreen
             listingEditor.OnLeaving();
 
         selected = next;
+
+        if (next == Category.Djs)
+            djList.Refresh(auto: true);
     }
 
 

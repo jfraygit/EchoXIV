@@ -12,6 +12,24 @@ public static class ChangelogData
 {
     public static readonly ChangelogEntry[] Entries =
     {
+        new("2.0.0.1", new[]
+        {
+            new ChangelogGroup("Added", new[]
+            {
+                "A Refresh button on the DJ list.",
+            }),
+            new ChangelogGroup("Changed", new[]
+            {
+                "The DJ list is shuffled rather than ordered by likes and follows, and reshuffles every six hours. DJs who are live still come first.",
+                "Most Followed and Most Liked now come first under Browse > Stats.",
+            }),
+            new ChangelogGroup("Fixed", new[]
+            {
+                "A DJ who had set no genres had their About text shown where their genres go.",
+                "Genres on the DJ list and on profiles showed in whatever case they were typed.",
+                "A DJ who ended their show stayed marked live on the DJ list until you restarted the plugin.",
+            }),
+        }),
         new("2.0.0.0", new[]
         {
             new ChangelogGroup("Added", new[]

@@ -4999,15 +4999,15 @@ public sealed class DjDeckWindow : Window, IDisposable
     private string DrawGenreFilter(string id, IReadOnlyList<string> options, string currentFilter, float width) =>
         DrawVenueDropdown(id, "All Genres", currentFilter, options, width, clearLabel: "All Genres");
 
-    /// Distinct known genres across every list in allGenreLists, grouped case-insensitively (first-seen
-    /// casing kept) and sorted - the actual computation DrawGenreFilter's options list needs, factored out so
-    /// callers can cache it instead of rebuilding it every single frame.
+    /// Distinct known genres across every list in allGenreLists, grouped case-insensitively, title-cased and
+    /// sorted - the actual computation DrawGenreFilter's options list needs, factored out so callers can
+    /// cache it instead of rebuilding it every single frame.
     private static List<string> ComputeGenreFilterOptions(IEnumerable<IEnumerable<string>> allGenreLists) =>
         allGenreLists
             .SelectMany(g => g)
             .Where(g => !string.IsNullOrWhiteSpace(g) && MusicGenres.IsKnown(g))
             .GroupBy(g => g, StringComparer.OrdinalIgnoreCase)
-            .Select(g => g.First())
+            .Select(g => CapitalizeWords(g.Key))
             .OrderBy(g => g, StringComparer.OrdinalIgnoreCase)
             .ToList();
 

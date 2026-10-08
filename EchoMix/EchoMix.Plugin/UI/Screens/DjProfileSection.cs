@@ -371,7 +371,8 @@ public sealed class DjProfileSection
 
         if (profile.Genres.Count > 0)
         {
-            DrawDetailRow("Genres", UiHelpers.JoinCapped(profile.Genres, 3));
+            DrawDetailRow("Genres", UiHelpers.JoinCapped(
+                profile.Genres.Select(DjDeckWindow.TitleCaseGenre).ToList(), 3));
             any = true;
         }
 

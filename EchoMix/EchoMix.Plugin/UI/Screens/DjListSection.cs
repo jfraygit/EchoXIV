@@ -25,6 +25,10 @@ public sealed class DjListSection
     private object? genreOptionsSource;
     private string search = string.Empty;
     private bool requested;
+    private long lastAutoRefresh;
+
+    /// How long an automatic re-fetch waits before it is willing to go out again.
+    private const long AutoRefreshThrottleMs = 10_000;
 
     public DjListSection(Plugin plugin)
     {
@@ -36,6 +40,23 @@ public sealed class DjListSection
 
     /// Passes the profile view's Edit click up to Browse, which owns the category switch.
     public DjProfileDetailDto? ConsumeEditRequest() => profileSection.ConsumeEditRequest();
+
+    /// Re-asks the relay for the list.
+    public void Refresh(bool auto = false)
+    {
+        var character = CharacterName;
+
+        if (character.Length == 0)
+            return;
+
+        var now = Environment.TickCount64;
+        if (auto && requested && now - lastAutoRefresh < AutoRefreshThrottleMs)
+            return;
+
+        requested = true;
+        lastAutoRefresh = now;
+        plugin.DjDeckWindow.RefreshDjProfiles(character);
+    }
 
     public void Draw(bool isSample)
     {
@@ -50,10 +71,7 @@ public sealed class DjListSection
         }
 
         if (!requested)
-        {
-            requested = true;
-            plugin.DjDeckWindow.RefreshDjProfiles(CharacterName);
-        }
+            Refresh();
 
         var snapshot = client.LatestDjProfiles;
 
@@ -194,9 +212,8 @@ public sealed class DjListSection
 
         y += TypeScale.Measure(TypeScale.Heading, "Ag").Y + Metrics.Xs;
 
-        var subtitle = profile.Genres.Count > 0
-            ? UiHelpers.JoinCapped(profile.Genres, 2)
-            : profile.Bio ?? string.Empty;
+        var subtitle = UiHelpers.JoinCapped(
+            profile.Genres.Select(DjDeckWindow.TitleCaseGenre).ToList(), 2);
 
         using (TypeScale.Caption())
         {
@@ -279,6 +296,7 @@ public sealed class DjListSection
     private List<DjProfileSummaryDto> Filter(IReadOnlyList<DjProfileSummaryDto> profiles)
     {
         var query = search.Trim();
+        var bucket = ShuffleBucket();
 
         return profiles
             .Where(p => genreFilter.Length == 0
@@ -287,8 +305,59 @@ public sealed class DjListSection
                 || p.DjName.Contains(query, StringComparison.OrdinalIgnoreCase))
 
             .OrderByDescending(p => p.IsLiveNow)
-            .ThenByDescending(p => p.IsLiveNow ? p.ListenerCount : p.FollowerCount)
+            .ThenBy(p => ShuffleKey(p.Id, bucket))
+
+            .ThenBy(p => p.Id, StringComparer.Ordinal)
             .ToList();
+    }
+
+    /// America/New_York rather than a fixed offset, so the boundaries stay on the same local clock through
+    /// DST instead of drifting an hour for half the year - the relay's own shuffle says the same thing about
+    /// the same zone.
+    private static readonly TimeZoneInfo? EasternZone = ResolveEastern();
+
+    private static TimeZoneInfo? ResolveEastern()
+    {
+        foreach (var id in new[] { "America/New_York", "Eastern Standard Time" })
+        {
+            try
+            {
+                return TimeZoneInfo.FindSystemTimeZoneById(id);
+            }
+            catch (Exception)
+            {
+            }
+        }
+
+        return null;
+    }
+
+    /// Which 6-hour window the clock is in.
+    private static int ShuffleBucket()
+    {
+        var now = EasternZone == null
+            ? DateTime.UtcNow
+            : TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, EasternZone);
+
+        return (now.Year * 1464) + (now.DayOfYear * 4) + (now.Hour / 6);
+    }
+
+    /// A profile's place in this bucket's order: FNV-1a over the id, seeded with the bucket, then avalanched
+    /// so neighbouring buckets don't produce near-identical orders.
+    private static uint ShuffleKey(string id, int bucket)
+    {
+        unchecked
+        {
+            var hash = 2166136261u ^ (uint)bucket;
+
+            foreach (var c in id)
+                hash = (hash ^ c) * 16777619u;
+
+            hash ^= hash >> 15;
+            hash *= 2246822519u;
+            hash ^= hash >> 13;
+            return hash;
+        }
     }
 
     private void RefreshGenreOptions(DjProfilesSnapshotMessage snapshot)
@@ -307,20 +376,32 @@ public sealed class DjListSection
     /// on its list's own header rather than in a panel above it.
     private void DrawListHeader(string title)
     {
+        var refreshSize = MathF.Round(Metrics.ControlSm);
         var searchWidth = MathF.Round(150f * Metrics.Scale);
         var genreWidth = MathF.Round(160f * Metrics.Scale);
 
-        var header = Fields.BeginListHeader(title, genreWidth + searchWidth + Metrics.Md);
+        var header = Fields.BeginListHeader(
+            title, refreshSize + genreWidth + searchWidth + (Metrics.Md * 2f));
+
+        ImGui.SetCursorScreenPos(new Vector2(
+            header.ControlMin.X, header.ControlMin.Y + ((header.Height - refreshSize) * 0.5f)));
+
+        if (Fields.IconButton("##v2refreshDjs", FontAwesomeIcon.Sync, refreshSize,
+                "Refresh", "The list is a snapshot, not a live feed."))
+        {
+            Refresh();
+        }
 
         var options = new List<string> { "All Genres" };
         options.AddRange(genreOptions);
         var index = genreFilter.Length == 0 ? 0 : options.IndexOf(genreFilter);
 
-        ImGui.SetCursorScreenPos(header.ControlMin);
+        var genreX = header.ControlMin.X + refreshSize + Metrics.Md;
+        ImGui.SetCursorScreenPos(new Vector2(genreX, header.ControlMin.Y));
         if (Fields.DropdownInline("##v2DjGenre", ref index, options, genreWidth, header.Height))
             genreFilter = index <= 0 ? string.Empty : options[index];
 
-        ImGui.SetCursorScreenPos(new Vector2(header.ControlMin.X + genreWidth + Metrics.Md, header.ControlMin.Y));
+        ImGui.SetCursorScreenPos(new Vector2(genreX + genreWidth + Metrics.Md, header.ControlMin.Y));
         Fields.TextInput("##v2DjSearch", ref search, 32, searchWidth, "Search DJs");
 
         Fields.EndListHeader(header);

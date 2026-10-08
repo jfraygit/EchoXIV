@@ -18,14 +18,14 @@ public sealed class StatsSection
     /// plugin change rather than a relay deploy.
     private static readonly (string Key, string Title, string Blurb)[] Boards =
     {
+        ("Followers", "Most Followed", "All time, not this month"),
+        ("Likes", "Most Liked", "All time, not this month"),
         ("ShowsPlayed", "Shows Played", "Sets that ran long enough to count"),
         ("OnAirSeconds", "Time On Air", "Total hours broadcasting"),
         ("ListenerSeconds", "Listener Hours", "Time spent listening, summed across everyone"),
         ("PeakListeners", "Biggest Room", "Most people in at once"),
         ("DaysActive", "Days Active", "Days with at least one show"),
         ("UniqueListeners", "People Reached", "Different listeners who tuned in"),
-        ("Likes", "Most Liked", "All time, not this month"),
-        ("Followers", "Most Followed", "All time, not this month"),
     };
 
     private static readonly string[] WindowLabels = { "This Month", "All Time" };
