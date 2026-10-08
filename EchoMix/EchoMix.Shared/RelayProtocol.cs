@@ -1,8 +1,38 @@
 using System;
 using System.Collections.Generic;
+using System.Security.Cryptography;
+using System.Text;
 using Newtonsoft.Json.Linq;
 
 namespace EchoMix.Shared;
+
+/// Proves a build came out of the real release pipeline rather than being compiled straight from the
+/// published open-source tree - the source (this check included) is public, so the thing that actually can't
+/// be copied is a signature, not a value baked into the code.
+public static class BuildAttestation
+{
+    /// True only if signature is a valid HMAC-SHA256 of version under secretKey.
+    public static bool Verify(string? version, string? signature, string secretKey)
+    {
+        if (string.IsNullOrEmpty(version) || string.IsNullOrEmpty(signature))
+            return false;
+
+        byte[] expected;
+        try
+        {
+            expected = Convert.FromBase64String(signature);
+        }
+        catch (FormatException)
+        {
+            return false;
+        }
+
+        using var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(secretKey));
+        var actual = hmac.ComputeHash(Encoding.UTF8.GetBytes(version));
+
+        return actual.Length == expected.Length && CryptographicOperations.FixedTimeEquals(actual, expected);
+    }
+}
 
 /// Fixed, shared-by-everyone connection info for the one relay this build of the plugin talks to - not a
 /// per-user setting, since a listener has to reach the exact same relay the host registered their room on.
@@ -64,6 +94,8 @@ public static class RelayMessageType
 
     public const string UpdateShowName = nameof(UpdateShowName);
 
+    public const string UpdatePublicListing = nameof(UpdatePublicListing);
+
     public const string SubmitShowReport = nameof(SubmitShowReport);
     public const string ShowReportAck = nameof(ShowReportAck);
 
@@ -83,6 +115,9 @@ public static class RelayMessageType
     public const string DjProfileLikeResult = nameof(DjProfileLikeResult);
     public const string ToggleDjProfileFollow = nameof(ToggleDjProfileFollow);
     public const string DjProfileFollowResult = nameof(DjProfileFollowResult);
+
+    public const string RequestDjStats = nameof(RequestDjStats);
+    public const string DjStatsSnapshot = nameof(DjStatsSnapshot);
 
     public const string GenerateProfileLinkCode = nameof(GenerateProfileLinkCode);
     public const string ProfileLinkCodeResult = nameof(ProfileLinkCodeResult);
@@ -178,6 +213,10 @@ public sealed class RegisterHostMessage
     /// comment.
     public bool WebListenEnabled { get; set; }
     public string? WebListenToken { get; set; }
+
+    /// See BuildAttestation's own doc comment.
+    public string? BuildAttestationVersion { get; set; }
+    public string? BuildAttestationSignature { get; set; }
 }
 
 public sealed class HostRegisteredMessage
@@ -213,6 +252,11 @@ public sealed class JoinRoomMessage
     /// ListenerRosterEntryDto), never used for authentication or proximity (that's the host's own
     /// CharacterName in JoinAcceptedMessage).
     public string CharacterName { get; set; } = string.Empty;
+
+    /// See RegisterHostMessage's own fields of the same name - same purpose, checked by
+    /// RelayServer.HandleListenerAsync instead of HandleHostAsync.
+    public string? BuildAttestationVersion { get; set; }
+    public string? BuildAttestationSignature { get; set; }
 }
 
 public sealed class JoinAcceptedMessage
@@ -341,6 +385,11 @@ public sealed class ShowImageChunkMessage
 
 /// Lead host -> relay only, mirrors RegisterHostMessage.ShowName but for a rename mid-show - see
 /// RelayMessageType.UpdateShowName's own doc comment.
+public sealed class UpdatePublicListingMessage
+{
+    public bool IsPubliclyListed { get; set; }
+}
+
 public sealed class UpdateShowNameMessage
 {
     public string? ShowName { get; set; }
@@ -581,6 +630,9 @@ public sealed class DjProfileDetailDto
     /// it unmanageable.
     public List<string> LinkedCharacterNames { get; set; } = new();
 
+    /// This DJ's all-time show statistics, or null if they have never hosted a qualifying show.
+    public DjStatTotalsDto? Stats { get; set; }
+
     /// Whether LinkedCharacterNames should also render on the public-facing part of the profile page (an
     /// "also seen as" line) for anyone who isn't the owner - linking itself is never hidden from the owner,
     /// this only controls whether OTHER people can see the alt list.
@@ -816,4 +868,90 @@ public sealed class WebListenLinkUpdatedMessage
 {
     public bool Enabled { get; set; }
     public string? Token { get; set; }
+}
+
+
+
+
+
+
+
+/// Which bucket to read.
+public sealed class RequestDjStatsMessage
+{
+    public string RequesterCharacterName { get; set; } = string.Empty;
+
+    /// True for the current calendar month (UTC), false for all time.
+    public bool MonthOnly { get; set; }
+}
+
+/// One DJ's own totals, for the "your stats" panel.
+public sealed class DjStatTotalsDto
+{
+    public int ShowsPlayed { get; set; }
+    public long OnAirSeconds { get; set; }
+
+    /// Summed across listeners, so an hour with four people in the room is four listener-hours.
+    public long ListenerSeconds { get; set; }
+
+    public int PeakListeners { get; set; }
+
+    /// Distinct calendar days (UTC) carrying at least one qualifying show.
+    public int DaysActive { get; set; }
+
+    /// Distinct character names that have ever tuned in.
+    public int UniqueListeners { get; set; }
+}
+
+/// One row of one board.
+public sealed class DjStatEntryDto
+{
+    public int Rank { get; set; }
+    public string ProfileId { get; set; } = string.Empty;
+    public string DjName { get; set; } = string.Empty;
+    public string? AvatarBase64 { get; set; }
+    public float FrameColorR { get; set; }
+    public float FrameColorG { get; set; }
+    public float FrameColorB { get; set; }
+    public string FrameStyle { get; set; } = "Solid";
+    public float NameColorR { get; set; }
+    public float NameColorG { get; set; }
+    public float NameColorB { get; set; }
+    public string NameEffect { get; set; } = "None";
+
+    /// The raw number.
+    public long Value { get; set; }
+
+    /// True for the caller's own row, so it can be marked wherever it lands in the list.
+    public bool IsRequester { get; set; }
+}
+
+/// `Key` is a stable identifier (ShowsPlayed, OnAirSeconds, ...), not a label - the client owns the wording
+/// and the formatting, so retitling a board is a plugin change rather than a relay deploy.
+public sealed class DjStatBoardDto
+{
+    public string Key { get; set; } = string.Empty;
+    public List<DjStatEntryDto> Entries { get; set; } = new();
+}
+
+public sealed class DjStatsSnapshotMessage
+{
+    public List<DjStatBoardDto> Boards { get; set; } = new();
+
+    /// The caller's own totals, or null if they have no DJ listing at all - which is different from having
+    /// one with no shows on it, and the tab says so differently.
+    public DjStatTotalsDto? You { get; set; }
+
+    /// Echoed back so a snapshot that arrives after the toggle was flipped again can be recognised as stale
+    /// rather than rendered under the wrong heading.
+    public bool IsMonth { get; set; }
+
+    /// "2026-10", for the client to render as a month name.
+    public string? MonthKey { get; set; }
+
+    /// How long a show has to run before it counts, so the client can state the rule without hardcoding a
+    /// number the relay could change underneath it.
+    public int QualifyingMinutes { get; set; }
+
+    public string? Error { get; set; }
 }

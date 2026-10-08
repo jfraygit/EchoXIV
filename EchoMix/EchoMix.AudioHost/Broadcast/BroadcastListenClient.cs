@@ -206,6 +206,8 @@ public sealed class BroadcastListenClient : IAsyncDisposable
                 RoomCode = roomCode,
                 PasswordHash = PasswordHasher.Hash(password),
                 CharacterName = characterName,
+                BuildAttestationVersion = BuildAttestationFile.Version,
+                BuildAttestationSignature = BuildAttestationFile.Signature,
             });
 
             var frame = await FrameIO.ReadFrameAsync(ssl, connectTimeout.Token);

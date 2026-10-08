@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Numerics;
 using System.Threading;
+using Dalamud.Game.ClientState.Keys;
 using Dalamud.Game.Command;
 using Dalamud.IoC;
 using Dalamud.Interface.Windowing;
@@ -10,6 +11,9 @@ using Dalamud.Plugin.Services;
 using EchoMix.Plugin.Audio;
 using EchoMix.Plugin.Ipc;
 using EchoMix.Plugin.UI;
+using EchoMix.Plugin.UI.Design;
+using EchoMix.Plugin.UI.Shell;
+using EchoMix.Plugin.UI.State;
 using EchoMix.Shared;
 
 namespace EchoMix.Plugin;
@@ -30,14 +34,22 @@ public sealed class Plugin : IDalamudPlugin
     [PluginService] internal static IObjectTable ObjectTable { get; private set; } = null!;
     [PluginService] internal static ITextureProvider TextureProvider { get; private set; } = null!;
     [PluginService] internal static IClientState ClientState { get; private set; } = null!;
+    [PluginService] internal static IKeyState KeyState { get; private set; } = null!;
 
     public Configuration Configuration { get; }
     public AudioHostClient AudioHostClient { get; } = new();
     public Fonts Fonts { get; }
 
+    /// Navigation state, shared rather than owned by a window - see EchoMixRouter's own doc comment.
+    public EchoMixRouter Router { get; } = new();
+
+    /// Form/text-input state, shared for the same reason Router is - see EchoMixEditState.
+    public EchoMixEditState EditState { get; } = new();
+
     public readonly WindowSystem WindowSystem = new("EchoMix");
     private readonly DjDeckWindow djDeckWindow;
     public DjDeckWindow DjDeckWindow => djDeckWindow;
+    public EchoMixShellWindow ShellWindow { get; }
     public HostLobbyWindow HostLobbyWindow { get; }
     public SongRequestWindow SongRequestWindow { get; }
     public FollowNotificationToast FollowNotificationToast { get; }
@@ -56,6 +68,7 @@ public sealed class Plugin : IDalamudPlugin
     private float lastSentListenVolume = -1f;
     private bool wasListening;
     private bool wasMultiHost;
+    private bool wasGuestDj;
     private bool wasLive;
     private bool wasHostReconnecting;
     private readonly HashSet<Guid> knownListenerIds = new();
@@ -71,18 +84,26 @@ public sealed class Plugin : IDalamudPlugin
     public Plugin()
     {
         Configuration = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
+
+        EditState.SeedFromConfiguration(Configuration);
+
         Theme.ApplyCustomColors(
             new Vector4(Configuration.DeckAAccentR, Configuration.DeckAAccentG, Configuration.DeckAAccentB, 1f),
             new Vector4(Configuration.DeckBAccentR, Configuration.DeckBAccentG, Configuration.DeckBAccentB, 1f),
             new Vector4(Configuration.BlendAccentR, Configuration.BlendAccentG, Configuration.BlendAccentB, 1f));
         Fonts = new Fonts(PluginInterface);
+
+        TypeScale.Initialize(Fonts);
         gameSoundMuteController = new GameSoundMuteController(GameConfig);
         proximityTracker = new ProximityTracker(ObjectTable);
         AutoJoinTracker = new AutoJoinTracker(proximityTracker);
 
         djDeckWindow = new DjDeckWindow(this);
         WindowSystem.AddWindow(djDeckWindow);
-        djDeckWindow.IsOpen = Configuration.IsDjWindowOpen;
+
+        ShellWindow = new EchoMixShellWindow(this);
+        WindowSystem.AddWindow(ShellWindow);
+        ApplyLookVisibility(Configuration.IsDjWindowOpen);
 
         HostLobbyWindow = new HostLobbyWindow(this);
         WindowSystem.AddWindow(HostLobbyWindow);
@@ -140,7 +161,7 @@ public sealed class Plugin : IDalamudPlugin
         Configuration.MasterVolume = status.MasterVolume;
         Configuration.DeckAGain = status.DeckA.Gain;
         Configuration.DeckBGain = status.DeckB.Gain;
-        Configuration.IsDjWindowOpen = djDeckWindow.IsOpen;
+        Configuration.IsDjWindowOpen = IsMainUiOpen;
         Configuration.Save();
 
         PluginInterface.UiBuilder.Draw -= DrawUi;
@@ -163,16 +184,56 @@ public sealed class Plugin : IDalamudPlugin
 
     private void OnCommand(string command, string args) => ToggleDjDeckWindow();
 
+
     private void OnListenerCommand(string command, string args)
     {
-        djDeckWindow.IsOpen = true;
         djDeckWindow.ShowListenerView();
+
+        if (Configuration.UseNewDesign)
+            ShellWindow.ShowListen();
+
+        ApplyLookVisibility(true);
     }
 
     private void OnDeckCommand(string command, string args)
     {
-        djDeckWindow.IsOpen = true;
         djDeckWindow.ShowDeckImmediately();
+
+        if (Configuration.UseNewDesign)
+            ShellWindow.ShowDecks();
+
+        ApplyLookVisibility(true);
+    }
+
+    /// Whether the main UI is showing, regardless of which look is drawing it.
+    public bool IsMainUiOpen => djDeckWindow.IsOpen || ShellWindow.IsOpen;
+
+    private bool? lastAppliedUseNewDesign;
+
+    /// Opens whichever main window matches the current look and closes the other.
+    private void ApplyLookVisibility(bool open)
+    {
+        var useNew = Configuration.UseNewDesign;
+
+        if (lastAppliedUseNewDesign != useNew)
+        {
+            if (useNew)
+            {
+                Router.Destination = ShellRoutes.DestinationFor(Router.CurrentView);
+            }
+            else
+            {
+                var isListening = AudioHostClient.LatestStatus.Broadcast.IsListening;
+                Router.CurrentView = ShellRoutes.LegacyBodyFor(Router.Destination, isListening).View;
+                Router.PendingView = null;
+                Router.ContentAlpha = 1f;
+            }
+
+            lastAppliedUseNewDesign = useNew;
+        }
+
+        djDeckWindow.IsOpen = open && !useNew;
+        ShellWindow.IsOpen = open && useNew;
     }
 
     /// NOTHING DRAWS OUTSIDE THE WORLD - same guard EchoGlam/EchoNav/EchoSim already ship: none of this
@@ -187,18 +248,24 @@ public sealed class Plugin : IDalamudPlugin
 
     private void ToggleDjDeckWindow()
     {
-        if (!djDeckWindow.IsOpen)
+        var open = IsMainUiOpen;
+        if (!open)
             djDeckWindow.ShowInitialView();
-        djDeckWindow.IsOpen = !djDeckWindow.IsOpen;
+        ApplyLookVisibility(!open);
     }
 
     /// Dalamud's own "open config" entry point (gear icon in the plugin installer).
     private void ToggleSettingsWindow()
     {
-        if (!djDeckWindow.IsOpen)
+        if (!IsMainUiOpen)
         {
             djDeckWindow.ShowSettingsImmediately();
-            djDeckWindow.IsOpen = true;
+            Router.Destination = ShellDestination.Settings;
+            ApplyLookVisibility(true);
+        }
+        else if (Configuration.UseNewDesign)
+        {
+            Router.Destination = ShellDestination.Settings;
         }
         else
         {
@@ -208,6 +275,16 @@ public sealed class Plugin : IDalamudPlugin
 
     private void OnFrameworkUpdate(IFramework framework)
     {
+        ApplyLookVisibility(IsMainUiOpen);
+
+        UpdateRailHotkeys();
+
+#if DEBUG
+
+        AudioHostClient.SampleProfilesOverride =
+            Configuration.UseSampleBrowseData ? UI.Screens.BrowseSampleData.Profiles : null;
+#endif
+
         if (!AudioHostClient.IsConnected)
         {
             _ = EnsureAudioHostConnectedAsync();
@@ -231,10 +308,18 @@ public sealed class Plugin : IDalamudPlugin
         gameSoundMuteController.SetShouldMute(isPlayingAnyAudio);
         UpdateListenVolume(status.Broadcast);
         UpdateAutoJoin(status.Broadcast, framework.UpdateDelta);
-        UpdateHostLobbyVisibility(status.Broadcast);
+        if (Configuration.UseNewDesign)
+        {
+            HostLobbyWindow.IsOpen = false;
+            HostLobbyWindow.IsExpanded = false;
+        }
+        else
+        {
+            UpdateHostLobbyVisibility(status.Broadcast);
+        }
 
-        SongRequestWindow.IsOpen = status.Broadcast.IsListening;
-        if (!status.Broadcast.IsListening)
+        SongRequestWindow.IsOpen = status.Broadcast.IsListening && !Configuration.UseNewDesign;
+        if (!status.Broadcast.IsListening || Configuration.UseNewDesign)
             SongRequestWindow.IsExpanded = false;
 
         var wentLive = AudioHostClient.ConsumeFollowedDjWentLive();
@@ -268,6 +353,11 @@ public sealed class Plugin : IDalamudPlugin
         {
             knownListenerIds.Clear();
         }
+        var isGuestDj = status.Broadcast.IsLive && !status.Broadcast.IsLead;
+        if (isGuestDj && !wasGuestDj && !wasLive && Configuration.UseNewDesign)
+            ShellWindow.ShowDecks();
+
+        wasGuestDj = isGuestDj;
         wasLive = status.Broadcast.IsLive;
 
         ipcProvider.CheckForChanges();
@@ -386,6 +476,56 @@ public sealed class Plugin : IDalamudPlugin
             Log.Debug($"[EchoMix] Sending SetOutputMuted={shouldMute} (gameFocused={GameWindowFocus.IsGameFocused})");
             AudioHostClient.Send(MessageType.SetOutputMuted, new SetOutputMutedCommand { Muted = shouldMute });
         }
+    }
+
+    private bool railKeyLeftWasDown;
+    private bool railKeyRightWasDown;
+    private bool railKeyUpWasDown;
+    private bool railKeyDownWasDown;
+
+    /// Arrow keys drive the 2.0 nav rail: Left and Right collapse and expand it, matching the direction its
+    /// own chevron points, and Up and Down move the selection while it is open.
+    private void UpdateRailHotkeys()
+    {
+        var canToggle = ShellWindow.CanToggleRail;
+        var canStep = ShellWindow.CanStepRail;
+
+        if (!canToggle)
+        {
+            railKeyLeftWasDown = false;
+            railKeyRightWasDown = false;
+        }
+        else
+        {
+            HandleRailHotkey(VirtualKey.LEFT, ref railKeyLeftWasDown, () => ShellWindow.ToggleRail(false));
+            HandleRailHotkey(VirtualKey.RIGHT, ref railKeyRightWasDown, () => ShellWindow.ToggleRail(true));
+        }
+
+        if (!canStep)
+        {
+            railKeyUpWasDown = false;
+            railKeyDownWasDown = false;
+            return;
+        }
+
+        HandleRailHotkey(VirtualKey.UP, ref railKeyUpWasDown, () => ShellWindow.StepRailSelection(-1));
+        HandleRailHotkey(VirtualKey.DOWN, ref railKeyDownWasDown, () => ShellWindow.StepRailSelection(1));
+    }
+
+    private void HandleRailHotkey(VirtualKey key, ref bool wasDown, Action act)
+    {
+        if (!KeyState.IsVirtualKeyValid(key))
+            return;
+
+        var down = KeyState[key];
+
+        if (down)
+            KeyState[key] = false;
+
+        if (down && !wasDown)
+            act();
+
+        wasDown = down;
     }
 
     private async System.Threading.Tasks.Task EnsureAudioHostConnectedAsync()

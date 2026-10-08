@@ -1,5 +1,4 @@
 using System.Numerics;
-using Dalamud.Bindings.ImGui;
 
 namespace EchoMix.Plugin.UI;
 
@@ -13,8 +12,9 @@ public sealed class BroadcastReconnectToast : ToastWindow
     private Vector4 accent = Theme.OrangeAccent;
 
     protected override float HoldSeconds => 10f;
-    protected override Vector2 ToastSize => new(320f, 90f);
-    protected override Vector4 BorderAccent => accent;
+    protected override int BodyMaxLines => 4;
+
+    protected override ToastContent Content => new(title, accent, Body: message);
 
     public BroadcastReconnectToast(Plugin plugin) : base(plugin, "###echomix-broadcastreconnecttoast")
     {
@@ -48,16 +48,5 @@ public sealed class BroadcastReconnectToast : ToastWindow
             : error;
         accent = Theme.OrangeAccent;
         ShowToast();
-    }
-
-    public override void Draw()
-    {
-        ImGui.SetWindowFontScale(Scale);
-        var colorCount = Theme.Push();
-
-        ImGui.TextColored(accent, title);
-        ImGui.TextWrapped(message);
-
-        Theme.Pop(colorCount);
     }
 }

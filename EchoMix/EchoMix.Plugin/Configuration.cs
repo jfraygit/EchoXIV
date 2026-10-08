@@ -67,9 +67,24 @@ public class Configuration : IPluginConfiguration
     /// so this is how a user on a different monitor/DPI gets a bigger or smaller window instead.
     public float UiScale { get; set; } = 1f;
 
+    /// Switches the whole UI between the 1.0 look (DjDeckWindow) and the 2.0 redesign (EchoMixShellWindow).
+    public bool UseNewDesign { get; set; } = true;
+
+    /// Replaces the Browse grid with generated fixtures, for judging the layout without needing a dozen
+    /// people live at once.
+    public bool UseSampleBrowseData { get; set; }
+
+    /// Whether the 2.0 nav rail is pinned open or collapsed to its thin edge affordance.
+    public bool ShellRailExpanded { get; set; } = true;
+
     /// Pins the window in place (ImGuiWindowFlags.NoMove) so it can't be accidentally dragged around mid-set
     /// - toggled from the lock icon in the header.
     public bool IsWindowLocked { get; set; }
+
+    /// Free toast placement, as an alternative to the nine-point FollowToastAnchor grid.
+    public bool ToastUseCustomPosition { get; set; }
+    public float ToastCustomX { get; set; } = 0.5f;
+    public float ToastCustomY { get; set; } = 0.08f;
 
     /// Phase 2 host/listener settings.
     public string? HostDisplayName { get; set; }
@@ -181,6 +196,9 @@ public class Configuration : IPluginConfiguration
 
     /// Whether DjDeckWindow shows its Host/Listener Welcome screen the next time the plugin loads (i.e.
     public bool ShowWelcomeOnEnable { get; set; } = true;
+
+    /// Whether the one-off 2.0 note has been read.
+    public bool HasSeenTwoPointOhNote { get; set; }
 
     /// Whichever Welcome screen card the user last clicked - null means they've never picked one (still see
     /// Welcome regardless of ShowWelcomeOnEnable in that case).

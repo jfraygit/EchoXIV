@@ -1,7 +1,4 @@
-using System.Numerics;
-using Dalamud.Bindings.ImGui;
 using Dalamud.Interface;
-using EchoMix.Plugin.UI.Controls;
 
 namespace EchoMix.Plugin.UI;
 
@@ -17,8 +14,16 @@ public sealed class ServerNoticeToast : ToastWindow
     private string noticeText = string.Empty;
 
     protected override float HoldSeconds => 10f;
-    protected override Vector2 ToastSize => new(340f, 130f);
-    protected override Vector4 BorderAccent => Theme.OrangeAccent;
+
+    /// The one toast whose body is free text written by whoever sent the notice, so it gets the most room.
+    protected override int BodyMaxLines => 6;
+
+    protected override ToastContent Content => new(
+        "Notice",
+        Theme.OrangeAccent,
+        Body: noticeText,
+        ActionLabel: "Got It",
+        ActionIcon: FontAwesomeIcon.Check);
 
     public ServerNoticeToast(Plugin plugin) : base(plugin, "###echomix-noticetoast")
     {
@@ -37,19 +42,13 @@ public sealed class ServerNoticeToast : ToastWindow
         ShowToast();
     }
 
-    public override void Draw()
+    /// Shows a notice unconditionally, for Settings' test button.
+    internal void ShowTestNotice(string notice)
     {
-        ImGui.SetWindowFontScale(Scale);
-        var colorCount = Theme.Push();
-
-        ImGui.TextColored(Theme.OrangeAccent, "Notice");
-        ImGui.TextWrapped(noticeText);
-        ImGui.Spacing();
-
-        var buttonSize = new Vector2(ImGui.GetContentRegionAvail().X, 26f * Scale);
-        if (PanelButton.Draw("##dismissServerNotice", plugin.Fonts.Icon, FontAwesomeIcon.Check, "Got It", buttonSize, Theme.OrangeAccent))
-            DismissNow();
-
-        Theme.Pop(colorCount);
+        lastShownNotice = notice;
+        noticeText = notice;
+        ShowToast();
     }
+
+    protected override void OnAction() => DismissNow();
 }

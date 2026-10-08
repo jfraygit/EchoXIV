@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Numerics;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Interface;
@@ -66,10 +67,20 @@ public static class UiHelpers
     {
         get
         {
+            var globalScale = GlobalFontScale;
+            return globalScale > 0f ? 1f / globalScale : 1f;
+        }
+    }
+
+    /// Dalamud's Global Font Scale, which multiplies the size of every font before any window gets to it.
+    public static float GlobalFontScale
+    {
+        get
+        {
             try
             {
                 var globalScale = ImGui.GetIO().FontGlobalScale;
-                return globalScale > 0f ? 1f / globalScale : 1f;
+                return globalScale > 0f ? globalScale : 1f;
             }
             catch
             {
@@ -99,5 +110,62 @@ public static class UiHelpers
         }
 
         return lo <= 0 ? ellipsis : text[..lo] + ellipsis;
+    }
+
+    /// Joins the first `max` items and summarises the rest as "+N".
+    public static string JoinCapped(IReadOnlyList<string> items, int max, string separator = "  ·  ")
+    {
+        if (items.Count == 0)
+            return string.Empty;
+
+        if (items.Count <= max)
+            return string.Join(separator, items);
+
+        var shown = string.Join(separator, items.Take(max));
+        return $"{shown}  +{items.Count - max}";
+    }
+
+    /// Greedy word wrap to at most `maxLines`, measured in the currently-pushed font.
+    public static string[] WrapToWidth(string text, float maxWidth, int maxLines)
+    {
+        if (maxLines <= 1 || ImGui.CalcTextSize(text).X <= maxWidth)
+            return new[] { maxLines <= 1 ? TruncateToWidth(text, maxWidth) : text };
+
+        var words = text.Split(' ');
+        var lines = new List<string>();
+        var current = string.Empty;
+
+        for (var i = 0; i < words.Length; i++)
+        {
+            var candidate = current.Length == 0 ? words[i] : $"{current} {words[i]}";
+
+            if (current.Length == 0 || ImGui.CalcTextSize(candidate).X <= maxWidth)
+            {
+                current = candidate;
+                continue;
+            }
+
+            if (lines.Count == maxLines - 1)
+            {
+                var rest = string.Join(" ", words, i, words.Length - i);
+                lines.Add(TruncateToWidth($"{current} {rest}", maxWidth));
+                return lines.ToArray();
+            }
+
+            lines.Add(current);
+            current = words[i];
+        }
+
+        if (current.Length > 0)
+            lines.Add(current);
+
+        return lines.ToArray();
+    }
+
+    /// mm:ss for a track position or duration.
+    public static string FormatClock(double seconds)
+    {
+        var t = TimeSpan.FromSeconds(seconds);
+        return $"{(int)t.TotalMinutes:00}:{t.Seconds:00}";
     }
 }

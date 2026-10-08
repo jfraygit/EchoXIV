@@ -14,14 +14,22 @@ using Dalamud.Interface.Windowing;
 using EchoMix.Plugin.Integrations;
 using EchoMix.Plugin.Ipc;
 using EchoMix.Plugin.UI.Controls;
+using EchoMix.Plugin.UI.Design;
+using EchoMix.Plugin.UI.State;
 using EchoMix.Shared;
+
+
+
+
+
+using ViewMode = EchoMix.Plugin.UI.State.EchoMixView;
+
+using EchoMix.Plugin.UI.Cosmetics;
 
 namespace EchoMix.Plugin.UI;
 
 public sealed class DjDeckWindow : Window, IDisposable
 {
-    private enum ViewMode { Deck, Settings, Listener, Welcome, JoinShow, BrowseShows, DjList, DjProfile, DjProfileEdit }
-
     private readonly Plugin plugin;
     private readonly PlaylistPanel playlistPanel;
 
@@ -38,7 +46,10 @@ public sealed class DjDeckWindow : Window, IDisposable
     private readonly float[] padVolumeBuffers = new float[8];
     private readonly Dictionary<string, float> trackGainEditBuffers = new();
     private readonly Dictionary<string, float> trackBpmEditBuffers = new();
-    private string? selectedPlaylistName;
+    private string? selectedPlaylistName { get => plugin.EditState.SelectedPlaylistName; set => plugin.EditState.SelectedPlaylistName = value; }
+
+    /// Shared with the 2.0 Settings screen, which offers the same style list.
+    internal static string[] VisualizerStyleNames => ListenerVisualizerStyleNames;
 
     private static readonly string[] ListenerVisualizerStyleNames =
     {
@@ -50,38 +61,39 @@ public sealed class DjDeckWindow : Window, IDisposable
     private float MinimizedMirrorCenterOffset => 10f * Scale;
 
     private const float ViewFadeSeconds = 0.18f;
-    private ViewMode currentView = ViewMode.Deck;
-    private ViewMode? pendingView;
-    private float contentAlpha = 1f;
 
-    private ViewMode lastNonSettingsView = ViewMode.Deck;
+    private ViewMode currentView { get => plugin.Router.CurrentView; set => plugin.Router.CurrentView = value; }
+    private ViewMode? pendingView { get => plugin.Router.PendingView; set => plugin.Router.PendingView = value; }
+    private float contentAlpha { get => plugin.Router.ContentAlpha; set => plugin.Router.ContentAlpha = value; }
 
-    private ViewMode viewBeforeBrowseShows = ViewMode.Deck;
+    private ViewMode lastNonSettingsView { get => plugin.Router.LastNonSettingsView; set => plugin.Router.LastNonSettingsView = value; }
 
-    private ViewMode viewBeforeDjProfileEdit = ViewMode.DjList;
+    private ViewMode viewBeforeBrowseShows { get => plugin.Router.ViewBeforeBrowseShows; set => plugin.Router.ViewBeforeBrowseShows = value; }
 
-    private bool wasListening;
+    private ViewMode viewBeforeDjProfileEdit { get => plugin.Router.ViewBeforeDjProfileEdit; set => plugin.Router.ViewBeforeDjProfileEdit = value; }
 
-    private float welcomeViewSeconds;
+    private bool wasListening { get => plugin.Router.WasListening; set => plugin.Router.WasListening = value; }
 
-    private bool hasClearedWelcomeThisSession;
+    private float welcomeViewSeconds { get => plugin.Router.WelcomeViewSeconds; set => plugin.Router.WelcomeViewSeconds = value; }
 
-    private string broadcastDjNameBuffer = string.Empty;
-    private string broadcastPasswordBuffer = string.Empty;
-    private string broadcastHostPasswordBuffer = string.Empty;
-    private string broadcastRoomCodeBuffer = string.Empty;
-    private string connectRoomCodeBuffer = string.Empty;
-    private string connectPasswordBuffer = string.Empty;
-    private bool joinShowBlankRoomCodeHint;
-    private string publicShowNameBuffer = string.Empty;
-    private string venueNameBuffer = string.Empty;
-    private string venueDataCenterBuffer = string.Empty;
-    private string venueWorldBuffer = string.Empty;
-    private string venueHousingAreaBuffer = string.Empty;
-    private string venueWardBuffer = string.Empty;
-    private string venuePlotBuffer = string.Empty;
-    private bool venueIsApartmentBuffer;
-    private bool venueSubdivisionBuffer;
+    private bool hasClearedWelcomeThisSession { get => plugin.Router.HasClearedWelcomeThisSession; set => plugin.Router.HasClearedWelcomeThisSession = value; }
+
+    private ref string broadcastDjNameBuffer => ref plugin.EditState.BroadcastDjNameBuffer;
+    private ref string broadcastPasswordBuffer => ref plugin.EditState.BroadcastPasswordBuffer;
+    private ref string broadcastHostPasswordBuffer => ref plugin.EditState.BroadcastHostPasswordBuffer;
+    private ref string broadcastRoomCodeBuffer => ref plugin.EditState.BroadcastRoomCodeBuffer;
+    private ref string connectRoomCodeBuffer => ref plugin.EditState.ConnectRoomCodeBuffer;
+    private ref string connectPasswordBuffer => ref plugin.EditState.ConnectPasswordBuffer;
+    private ref bool joinShowBlankRoomCodeHint => ref plugin.EditState.JoinShowBlankRoomCodeHint;
+    private ref string publicShowNameBuffer => ref plugin.EditState.PublicShowNameBuffer;
+    private ref string venueNameBuffer => ref plugin.EditState.VenueNameBuffer;
+    private ref string venueDataCenterBuffer => ref plugin.EditState.VenueDataCenterBuffer;
+    private ref string venueWorldBuffer => ref plugin.EditState.VenueWorldBuffer;
+    private ref string venueHousingAreaBuffer => ref plugin.EditState.VenueHousingAreaBuffer;
+    private ref string venueWardBuffer => ref plugin.EditState.VenueWardBuffer;
+    private ref string venuePlotBuffer => ref plugin.EditState.VenuePlotBuffer;
+    private ref bool venueIsApartmentBuffer => ref plugin.EditState.VenueIsApartmentBuffer;
+    private ref bool venueSubdivisionBuffer => ref plugin.EditState.VenueSubdivisionBuffer;
 
     private List<SavedVenueDto>? ownSavedVenuesCache;
     private bool ownSavedVenuesRequestSent;
@@ -104,11 +116,11 @@ public sealed class DjDeckWindow : Window, IDisposable
     private float browseShowCardHeight = 340f;
     private float measuredBrowseShowCardHeight;
 
-    private string reportShowReasonBuffer = string.Empty;
+    private ref string reportShowReasonBuffer => ref plugin.EditState.ReportShowReasonBuffer;
     private bool reportShowSending;
     private ReportShowResultMessage? reportShowSendResult;
 
-    private string joinPasswordBuffer = string.Empty;
+    private ref string joinPasswordBuffer => ref plugin.EditState.JoinPasswordBuffer;
     private string? lastAttemptedJoinRoomCode;
 
     private readonly object publicShowImageGate = new();
@@ -124,14 +136,12 @@ public sealed class DjDeckWindow : Window, IDisposable
     private string? djProfileBannerTextureForId;
     private bool djProfileBannerLoading;
 
-    private string djProfileReportReasonBuffer = string.Empty;
+    private ref string djProfileReportReasonBuffer => ref plugin.EditState.DjProfileReportReasonBuffer;
     private bool djProfileReportSending;
     private DjProfileReportAckMessage? djProfileReportSendResult;
 
     private bool djProfileDeleteSending;
     private DjProfileDeleteResultMessage? djProfileDeleteResult;
-
-    private double? djProfileNumberCopiedAt;
 
     private readonly HashSet<string> djProfileLikePending = new();
     private readonly HashSet<string> djProfileFollowPending = new();
@@ -140,14 +150,14 @@ public sealed class DjDeckWindow : Window, IDisposable
 
     private readonly Dictionary<string, float> publicShowCardGlow = new();
 
-    private string djListGenreFilter = string.Empty;
-    private string liveShowsGenreFilter = string.Empty;
+    private ref string djListGenreFilter => ref plugin.EditState.DjListGenreFilter;
+    private ref string liveShowsGenreFilter => ref plugin.EditState.LiveShowsGenreFilter;
 
     private object? liveShowsGenreFilterOptionsSource;
     private List<string> liveShowsGenreFilterOptions = new();
     private object? djListGenreFilterOptionsSource;
     private List<string> djListGenreFilterOptions = new();
-    private string djListNameSearchBuffer = string.Empty;
+    private ref string djListNameSearchBuffer => ref plugin.EditState.DjListNameSearchBuffer;
 
     /// The avatar frame style options a DJ can pick in the edit form - see DrawDjProfileAvatar for how each
     /// one actually renders.
@@ -160,34 +170,33 @@ public sealed class DjDeckWindow : Window, IDisposable
     {
         "None", "Gradient", "Glow", "Outline", "Underline", "Embossed", "Split",        "Pulse", "Rainbow", "Wave", "Shimmer", "Chase", "Flicker", "Typewriter", "Marquee", "Glitch", "Cascade", "Heatwave", "Blink",    };
 
-    private string? editingDjProfileId;
+    private ref string? editingDjProfileId => ref plugin.EditState.EditingDjProfileId;
 
     private string? pendingEditProfileIdOnDetailLoad;
 
-    private string djEditDjNameBuffer = string.Empty;
-    private string djEditBioBuffer = string.Empty;
-    private bool djEditBioWrapPending;
-    private float djEditBioWrapWidth;
-    private readonly List<SavedVenueDto> djEditSavedVenues = new();
-    private string djEditVenueNameBuffer = string.Empty;
-    private string djEditVenueDataCenterBuffer = string.Empty;
-    private string djEditVenueWorldBuffer = string.Empty;
-    private string djEditVenueHousingAreaBuffer = string.Empty;
-    private string djEditVenueWardBuffer = string.Empty;
-    private string djEditVenuePlotBuffer = string.Empty;
-    private bool djEditVenueIsApartment;
-    private bool djEditVenueSubdivision;
-    private readonly List<string> djEditGenres = new();
-    private string djEditGenreEntryBuffer = string.Empty;
-    private readonly List<DjAvailabilityDayDto> djEditAvailability = Enumerable.Range(0, 7).Select(_ => new DjAvailabilityDayDto()).ToList();
-    private Vector3 djEditFrameColor = new(0.25f, 0.85f, 0.95f);
-    private string djEditFrameStyle = "Solid";
-    private string djEditNameEffect = "None";
-    private Vector3 djEditNameColor = new(0.25f, 0.85f, 0.95f);
-    private string djEditAetherphoneNumber = string.Empty;
+    private ref string djEditDjNameBuffer => ref plugin.EditState.DjEditDjNameBuffer;
+    private ref string djEditBioBuffer => ref plugin.EditState.DjEditBioBuffer;
+    private ref bool djEditBioWrapPending => ref plugin.EditState.DjEditBioWrapPending;
+    private ref float djEditBioWrapWidth => ref plugin.EditState.DjEditBioWrapWidth;
+    private List<SavedVenueDto> djEditSavedVenues => plugin.EditState.DjEditSavedVenues;
+    private ref string djEditVenueNameBuffer => ref plugin.EditState.DjEditVenueNameBuffer;
+    private ref string djEditVenueDataCenterBuffer => ref plugin.EditState.DjEditVenueDataCenterBuffer;
+    private ref string djEditVenueWorldBuffer => ref plugin.EditState.DjEditVenueWorldBuffer;
+    private ref string djEditVenueHousingAreaBuffer => ref plugin.EditState.DjEditVenueHousingAreaBuffer;
+    private ref string djEditVenueWardBuffer => ref plugin.EditState.DjEditVenueWardBuffer;
+    private ref string djEditVenuePlotBuffer => ref plugin.EditState.DjEditVenuePlotBuffer;
+    private ref bool djEditVenueIsApartment => ref plugin.EditState.DjEditVenueIsApartment;
+    private ref bool djEditVenueSubdivision => ref plugin.EditState.DjEditVenueSubdivision;
+    private List<string> djEditGenres => plugin.EditState.DjEditGenres;
+    private ref string djEditGenreEntryBuffer => ref plugin.EditState.DjEditGenreEntryBuffer;
+    private List<DjAvailabilityDayDto> djEditAvailability => plugin.EditState.DjEditAvailability;
+    private ref Vector3 djEditFrameColor => ref plugin.EditState.DjEditFrameColor;
+    private ref string djEditFrameStyle => ref plugin.EditState.DjEditFrameStyle;
+    private ref string djEditNameEffect => ref plugin.EditState.DjEditNameEffect;
+    private ref Vector3 djEditNameColor => ref plugin.EditState.DjEditNameColor;
 
-    private readonly List<string> djEditLinkedCharacterNames = new();
-    private bool djEditShowLinkedCharacters;
+    private List<string> djEditLinkedCharacterNames => plugin.EditState.DjEditLinkedCharacterNames;
+    private ref bool djEditShowLinkedCharacters => ref plugin.EditState.DjEditShowLinkedCharacters;
     private string? djLinkCodeGenerated;
     private float djLinkCodeExpiresInSeconds;
     private bool djLinkCodeGenerating;
@@ -195,7 +204,7 @@ public sealed class DjDeckWindow : Window, IDisposable
     private double? djLinkCodeCopiedAt;
     private readonly HashSet<string> djUnlinkPending = new(StringComparer.OrdinalIgnoreCase);
 
-    private string djRedeemCodeBuffer = string.Empty;
+    private ref string djRedeemCodeBuffer => ref plugin.EditState.DjRedeemCodeBuffer;
     private bool djRedeemSending;
     private ProfileLinkRedeemResultMessage? djRedeemResult;
 
@@ -221,11 +230,11 @@ public sealed class DjDeckWindow : Window, IDisposable
     private float djProfileSaveElapsed;
     private const float DjProfileSaveTimeoutSeconds = 20f;
 
-    private string songRequestNameBuffer = string.Empty;
+    private ref string songRequestNameBuffer => ref plugin.EditState.SongRequestNameBuffer;
 
     private const string ReportBugPopupId = "##reportBugPopup";
-    private string reportBugDescriptionBuffer = string.Empty;
-    private string reportBugDiscordNameBuffer = string.Empty;
+    private ref string reportBugDescriptionBuffer => ref plugin.EditState.ReportBugDescriptionBuffer;
+    private ref string reportBugDiscordNameBuffer => ref plugin.EditState.ReportBugDiscordNameBuffer;
     private bool reportBugSending;
     private BugReportResultMessage? reportBugSendResult;
 
@@ -236,11 +245,11 @@ public sealed class DjDeckWindow : Window, IDisposable
     private float playlistSectionAlpha = 1f;
     private const float PlaylistSectionFadeSeconds = 0.15f;
 
-    private bool joinAsDjMode;
+    private bool joinAsDjMode { get => plugin.EditState.JoinAsDjMode; set => plugin.EditState.JoinAsDjMode = value; }
     private string connectHostPasswordBuffer = string.Empty;
     private string connectDjNameBuffer = string.Empty;
 
-    private bool isMinimized;
+    private bool isMinimized { get => plugin.Router.IsMinimized; set => plugin.Router.IsMinimized = value; }
 
     private bool miniBoxDraggedThisPress;
 
@@ -291,24 +300,24 @@ public sealed class DjDeckWindow : Window, IDisposable
     private float Scale => Math.Clamp(plugin.Configuration.UiScale, 0.75f, 1.5f);
 
     public Vector2 WindowScreenPosition { get; private set; }
-    public Vector2 CurrentWindowSize => currentSize;
+    public Vector2 CurrentWindowSize => shellGeometrySize ?? currentSize;
+
+    /// Set by the 2.0 shell while it, not this window, is the one on screen; null whenever this window is
+    /// drawing.
+    private Vector2? shellGeometrySize;
+
+    /// Lets the 2.0 shell publish its own position and size through this window's geometry properties.
+    public void AdoptShellGeometry(Vector2 screenPosition, Vector2 size)
+    {
+        WindowScreenPosition = screenPosition;
+        shellGeometrySize = size;
+    }
 
     public DjDeckWindow(Plugin plugin) : base("EchoMix###echomix-main")
     {
         this.plugin = plugin;
         playlistPanel = new PlaylistPanel(plugin);
-        broadcastDjNameBuffer = plugin.Configuration.HostDisplayName ?? string.Empty;
-        broadcastRoomCodeBuffer = plugin.Configuration.LastVanityRoomCode ?? string.Empty;
-        connectRoomCodeBuffer = plugin.Configuration.LastRoomCode ?? string.Empty;
-        publicShowNameBuffer = plugin.Configuration.LastShowName ?? string.Empty;
-        venueNameBuffer = plugin.Configuration.LastVenueName ?? string.Empty;
-        venueDataCenterBuffer = plugin.Configuration.LastVenueDataCenter ?? string.Empty;
-        venueWorldBuffer = plugin.Configuration.LastVenueWorld ?? string.Empty;
-        venueHousingAreaBuffer = plugin.Configuration.LastVenueHousingArea ?? string.Empty;
-        venueWardBuffer = plugin.Configuration.LastVenueWard ?? string.Empty;
-        venuePlotBuffer = plugin.Configuration.LastVenuePlot ?? string.Empty;
-        venueIsApartmentBuffer = plugin.Configuration.LastVenueIsApartment;
-        venueSubdivisionBuffer = plugin.Configuration.LastVenueSubdivision;
+
 
         if (!plugin.Configuration.ShowWelcomeOnEnable && plugin.Configuration.LastChosenRole.HasValue)
         {
@@ -487,9 +496,122 @@ public sealed class DjDeckWindow : Window, IDisposable
         }
     }
 
+    /// The per-frame animation and view-transition pump, for the 2.0 shell to call while this window isn't
+    /// the one drawing.
+    public void TickFrame()
+    {
+        var dt = ImGui.GetIO().DeltaTime;
+        var status = plugin.AudioHostClient.LatestStatus;
+
+        glowA = UiHelpers.Lerp(glowA, status.DeckA.IsPlaying ? 1f : 0f, 6f, dt);
+        glowB = UiHelpers.Lerp(glowB, status.DeckB.IsPlaying ? 1f : 0f, 6f, dt);
+
+        UpdateViewTransition(dt);
+        UpdateListenerViewTransition(status.Broadcast);
+    }
+
+    /// The per-frame relay response pump, for the 2.0 shell to call while this window isn't the one drawing.
+    public void TickRelayResponses() => DrawHeader(pollOnly: true);
+
+    /// Renders a 1.0 body inside the 2.0 shell, for destinations the redesign hasn't reached yet.
+    public void DrawLegacyBody(ViewMode view, int? settingsTab = null)
+    {
+        if (settingsTab is { } tab)
+            settingsTabStrip.SetImmediate(tab);
+
+        var status = plugin.AudioHostClient.LatestStatus;
+
+        using var ambient = AmbientStyle.Restore();
+
+        var themeColors = Theme.Push();
+        ImGui.SetWindowFontScale(Scale);
+
+        try
+        {
+            switch (view)
+            {
+                case ViewMode.Deck:
+                    DrawDeckBody(status);
+                    break;
+                case ViewMode.Settings:
+                    DrawSettingsBody();
+                    break;
+                case ViewMode.Welcome:
+                    DrawWelcomeBody();
+                    break;
+                case ViewMode.JoinShow:
+                    DrawJoinShowBody(status.Broadcast);
+                    break;
+                case ViewMode.BrowseShows:
+                    DrawLiveShowsHeaderRow(isDjList: false);
+                    DrawBrowseShowsBody();
+                    break;
+                case ViewMode.DjList:
+                    DrawLiveShowsHeaderRow(isDjList: true);
+                    DrawDjListBody();
+                    break;
+                case ViewMode.DjProfile:
+                    DrawDjProfileBody();
+                    break;
+                case ViewMode.DjProfileEdit:
+                    DrawDjProfileEditBody();
+                    break;
+                default:
+                    DrawListenerBody(status.Broadcast);
+                    break;
+            }
+        }
+        finally
+        {
+            Theme.Pop(themeColors);
+        }
+    }
+
+    /// The minimized box, for the shell to render in its own minimized state.
+    public void DrawLegacyMinimizedBody()
+    {
+        var status = plugin.AudioHostClient.LatestStatus;
+        using var ambient = AmbientStyle.Restore();
+        var themeColors = Theme.Push();
+        ImGui.SetWindowFontScale(Scale);
+
+        try
+        {
+            if (status.Broadcast.IsListening)
+                DrawMinimizedListenerBody(status.Broadcast);
+            else
+                DrawMinimizedDeckBody(status);
+        }
+        finally
+        {
+            Theme.Pop(themeColors);
+        }
+    }
+
+    /// The modal dialogs the 1.0 bodies can open.
+    public void DrawLegacyDialogs()
+    {
+        using var ambient = AmbientStyle.Restore();
+        var themeColors = Theme.Push();
+
+        try
+        {
+            soundPadFileDialogManager.Draw();
+            showImageFileDialogManager.Draw();
+            djProfileImageFileDialogManager.Draw();
+            imageCropDialog.Draw(Scale);
+        }
+        finally
+        {
+            Theme.Pop(themeColors);
+        }
+    }
+
     public override void Draw()
     {
         WindowScreenPosition = ImGui.GetWindowPos();
+
+        shellGeometrySize = null;
         UpdateMinimizePosition();
         DrawWindowChrome();
         soundPadFileDialogManager.Draw();
@@ -2119,360 +2241,16 @@ public sealed class DjDeckWindow : Window, IDisposable
     /// unrecognized/blank style, which falls back to Solid) is rounded.
     private static bool IsSquareCorneredFrameStyle(string style) => style is "Corners" or "Gradient" or "Brackets" or "Sentry";
 
-    /// Renders whichever frame style the profile's owner picked - see the individual case blocks below for
-    /// each one's mechanics.
+
     private void DrawAvatarFrame(ImDrawListPtr drawList, Vector2 origin, Vector2 size, float rounding, Vector4 color, string style)
-    {
-        var thickness = 3f * Scale;
-        var outset = thickness / 2f;
-        var outerMin = origin - new Vector2(outset);
-        var outerMax = origin + size + new Vector2(outset);
-        var outerSize = outerMax - outerMin;
-        var r = MathF.Min(rounding + outset, MathF.Min(outerSize.X, outerSize.Y) / 2f);
-        var col = ImGui.GetColorU32(color);
+        => DjCosmetics.DrawAvatarFrame(drawList, origin, size, rounding, color, style, Scale);
 
-        switch (style)
-        {
-            case "Dashed":
-            {
-                const int segments = 20;
-                for (var i = 0; i < segments; i += 2)
-                {
-                    var p0 = Theme.RoundedRectPerimeterPoint(outerMin, outerSize, r, i / (float)segments);
-                    var p1 = Theme.RoundedRectPerimeterPoint(outerMin, outerSize, r, (i + 0.6f) / segments);
-                    drawList.AddLine(p0, p1, col, thickness);
-                }
-                break;
-            }
+    private static Vector3 HsvToRgb(float h, float s, float v) => DjCosmetics.HsvToRgb(h, s, v);
 
-            case "Dotted":
-            {
-                const int dots = 28;
-                for (var i = 0; i < dots; i++)
-                {
-                    var pos = Theme.RoundedRectPerimeterPoint(outerMin, outerSize, r, i / (float)dots);
-                    drawList.AddCircleFilled(pos, thickness * 0.6f, col);
-                }
-                break;
-            }
+    private void DrawDjName(string text, Vector4 color, string effect, float fontScale)
+        => DjCosmetics.DrawDjName(plugin.Fonts, text, color, effect, fontScale, Scale);
 
-            case "Double":
-            {
-                var farGap = 4f * Scale;
-                drawList.AddRect(outerMin, outerMax, col, r, ImDrawFlags.None, 1.5f * Scale);
-                drawList.AddRect(outerMin - new Vector2(farGap), outerMax + new Vector2(farGap), col, r + farGap, ImDrawFlags.None, 1.5f * Scale);
-                break;
-            }
 
-            case "Corners":
-            {
-                var armLength = MathF.Min(outerSize.X, outerSize.Y) * 0.22f;
-                void DrawCorner(Vector2 corner, Vector2 dirX, Vector2 dirY)
-                {
-                    drawList.AddLine(corner, corner + (dirX * armLength), col, thickness);
-                    drawList.AddLine(corner, corner + (dirY * armLength), col, thickness);
-                }
-
-                DrawCorner(outerMin, new Vector2(1f, 0f), new Vector2(0f, 1f));
-                DrawCorner(new Vector2(outerMax.X, outerMin.Y), new Vector2(-1f, 0f), new Vector2(0f, 1f));
-                DrawCorner(outerMax, new Vector2(-1f, 0f), new Vector2(0f, -1f));
-                DrawCorner(new Vector2(outerMin.X, outerMax.Y), new Vector2(1f, 0f), new Vector2(0f, -1f));
-                break;
-            }
-
-            case "Gradient":
-            {
-                var tint = new Vector4(MathF.Min(1f, color.X + 0.35f), MathF.Min(1f, color.Y + 0.35f), MathF.Min(1f, color.Z + 0.35f), 1f);
-                var c1 = ImGui.GetColorU32(tint);
-                var topLeft = outerMin;
-                var topRight = new Vector2(outerMax.X, outerMin.Y);
-                var bottomRight = outerMax;
-                var bottomLeft = new Vector2(outerMin.X, outerMax.Y);
-                drawList.AddLine(topLeft, topRight, c1, thickness);
-                drawList.AddLine(topRight, bottomRight, col, thickness);
-                drawList.AddLine(bottomRight, bottomLeft, c1, thickness);
-                drawList.AddLine(bottomLeft, topLeft, col, thickness);
-                break;
-            }
-
-            case "Glow":
-            {
-                for (var i = 4; i >= 1; i--)
-                {
-                    var haloOutset = i * 2.5f * Scale;
-                    var alpha = 0.16f / i;
-                    drawList.AddRect(outerMin - new Vector2(haloOutset), outerMax + new Vector2(haloOutset),
-                        ImGui.GetColorU32(new Vector4(color.X, color.Y, color.Z, alpha)), r + haloOutset, ImDrawFlags.None, thickness);
-                }
-                drawList.AddRect(outerMin, outerMax, col, r, ImDrawFlags.None, thickness * 0.7f);
-                break;
-            }
-
-            case "Pulse":
-            {
-                var pulse = 0.55f + (0.45f * MathF.Sin((float)ImGui.GetTime() * 2.2f));
-                var pulseColor = new Vector4(color.X, color.Y, color.Z, MathF.Max(0.25f, pulse));
-                drawList.AddRect(outerMin, outerMax, ImGui.GetColorU32(pulseColor), r, ImDrawFlags.None, (thickness * 0.7f) + (pulse * thickness * 0.6f));
-                break;
-            }
-
-            case "Chase":
-            {
-                drawList.AddRect(outerMin, outerMax, ImGui.GetColorU32(new Vector4(color.X, color.Y, color.Z, 0.3f)), r, ImDrawFlags.None, thickness * 0.6f);
-
-                const int trailDots = 6;
-                const float trailSpacing = 0.02f;
-                const float loopsPerSecond = 0.3f;
-                var headT = (float)(ImGui.GetTime() * loopsPerSecond % 1.0);
-                for (var i = 0; i < trailDots; i++)
-                {
-                    var t = headT - (i * trailSpacing);
-                    var alpha = MathF.Pow(1f - (i / (float)trailDots), 1.5f);
-                    var pos = Theme.RoundedRectPerimeterPoint(outerMin, outerSize, r, t);
-                    var dotRadius = MathF.Max(1.5f, 4f - (i * 0.4f)) * Scale;
-                    drawList.AddCircleFilled(pos, dotRadius, ImGui.GetColorU32(new Vector4(color.X, color.Y, color.Z, alpha)));
-                }
-                break;
-            }
-
-            case "Spin":
-            {
-                const int segments = 40;
-                var timeOffset = (float)(ImGui.GetTime() * 0.25 % 1.0);
-                var tint = new Vector4(MathF.Min(1f, color.X + 0.4f), MathF.Min(1f, color.Y + 0.4f), MathF.Min(1f, color.Z + 0.4f), 1f);
-                for (var i = 0; i < segments; i++)
-                {
-                    var t0 = i / (float)segments;
-                    var t1 = (i + 1f) / segments;
-                    var blend = (MathF.Sin((t0 + timeOffset) * MathF.PI * 2f) + 1f) / 2f;
-                    var segColor = Vector4.Lerp(color, tint, blend);
-                    var p0 = Theme.RoundedRectPerimeterPoint(outerMin, outerSize, r, t0);
-                    var p1 = Theme.RoundedRectPerimeterPoint(outerMin, outerSize, r, t1);
-                    drawList.AddLine(p0, p1, ImGui.GetColorU32(segColor), thickness);
-                }
-                break;
-            }
-
-            case "Rainbow":
-            {
-                var hue = (float)(ImGui.GetTime() * 0.15 % 1.0);
-                var rainbow = HsvToRgb(hue, 0.75f, 1f);
-                drawList.AddRect(outerMin, outerMax, ImGui.GetColorU32(new Vector4(rainbow.X, rainbow.Y, rainbow.Z, 1f)), r, ImDrawFlags.None, thickness);
-                break;
-            }
-
-            case "Sparkle":
-            {
-                drawList.AddRect(outerMin, outerMax, ImGui.GetColorU32(new Vector4(color.X, color.Y, color.Z, 0.35f)), r, ImDrawFlags.None, thickness * 0.6f);
-
-                const int sparkleCount = 8;
-                var time = (float)ImGui.GetTime();
-                for (var i = 0; i < sparkleCount; i++)
-                {
-                    var t = i / (float)sparkleCount;
-                    var phase = (time * 1.3f) + (i * 1.7f);
-                    var twinkle = MathF.Max(0f, MathF.Sin(phase));
-                    if (twinkle <= 0.05f)
-                        continue;
-
-                    var pos = Theme.RoundedRectPerimeterPoint(outerMin, outerSize, r, t);
-                    var radius = (1.5f + (twinkle * 2.5f)) * Scale;
-                    drawList.AddCircleFilled(pos, radius, ImGui.GetColorU32(new Vector4(1f, 1f, 1f, twinkle * 0.9f)));
-                    drawList.AddCircleFilled(pos, radius * 0.5f, col);
-                }
-                break;
-            }
-
-            case "Ticks":
-            {
-                var center = origin + (size / 2f);
-                const int tickCount = 16;
-                var tickLength = thickness * 1.8f;
-                drawList.AddRect(outerMin, outerMax, ImGui.GetColorU32(new Vector4(color.X, color.Y, color.Z, 0.35f)), r, ImDrawFlags.None, thickness * 0.5f);
-                for (var i = 0; i < tickCount; i++)
-                {
-                    var t = i / (float)tickCount;
-                    var pos = Theme.RoundedRectPerimeterPoint(outerMin, outerSize, r, t);
-                    var dir = pos - center;
-                    if (dir.LengthSquared() > 0.0001f)
-                        dir = Vector2.Normalize(dir);
-                    drawList.AddLine(pos, pos + (dir * tickLength), col, thickness * 0.8f);
-                }
-                break;
-            }
-
-            case "Chain":
-            {
-                const int links = 18;
-                for (var i = 0; i < links; i++)
-                {
-                    var t = i / (float)links;
-                    var pos = Theme.RoundedRectPerimeterPoint(outerMin, outerSize, r, t);
-                    var radius = (i % 2 == 0 ? thickness * 0.85f : thickness * 0.45f);
-                    drawList.AddCircleFilled(pos, radius, col);
-                }
-                break;
-            }
-
-            case "Brackets":
-            {
-                var insetFromCorner = outerSize.X * 0.16f;
-                var tickDrop = thickness * 1.6f;
-                void DrawBracket(float y, float dropDir)
-                {
-                    var lineStart = new Vector2(outerMin.X + insetFromCorner, y);
-                    var lineEnd = new Vector2(outerMax.X - insetFromCorner, y);
-                    drawList.AddLine(lineStart, lineEnd, col, thickness);
-                    drawList.AddLine(lineStart, lineStart + new Vector2(0f, tickDrop * dropDir), col, thickness);
-                    drawList.AddLine(lineEnd, lineEnd + new Vector2(0f, tickDrop * dropDir), col, thickness);
-                }
-                DrawBracket(outerMin.Y, 1f);
-                DrawBracket(outerMax.Y, -1f);
-                break;
-            }
-
-            case "Stitch":
-            {
-                const int stitches = 24;
-                var stitchLength = thickness * 2.2f;
-                for (var i = 0; i < stitches; i++)
-                {
-                    var t0 = i / (float)stitches;
-                    var t1 = (i + 0.15f) / stitches;
-                    var p0 = Theme.RoundedRectPerimeterPoint(outerMin, outerSize, r, t0);
-                    var p1 = Theme.RoundedRectPerimeterPoint(outerMin, outerSize, r, t1);
-                    var tangent = p1 - p0;
-                    if (tangent.LengthSquared() < 0.0001f)
-                        tangent = new Vector2(1f, 0f);
-                    tangent = Vector2.Normalize(tangent);
-                    var normal = new Vector2(-tangent.Y, tangent.X) * (i % 2 == 0 ? 1f : -1f);
-                    var diagonal = Vector2.Normalize(tangent + normal) * stitchLength;
-                    var mid = Theme.RoundedRectPerimeterPoint(outerMin, outerSize, r, (t0 + t1) / 2f);
-                    drawList.AddLine(mid - (diagonal / 2f), mid + (diagonal / 2f), col, thickness * 0.6f);
-                }
-                break;
-            }
-
-            case "Blocks":
-            {
-                const int blockCount = 20;
-                var blockSize = thickness * 1.6f;
-                for (var i = 0; i < blockCount; i++)
-                {
-                    var t = i / (float)blockCount;
-                    var pos = Theme.RoundedRectPerimeterPoint(outerMin, outerSize, r, t);
-                    var half = new Vector2(blockSize / 2f);
-                    var alpha = i % 2 == 0 ? 1f : 0.3f;
-                    drawList.AddRectFilled(pos - half, pos + half, ImGui.GetColorU32(new Vector4(color.X, color.Y, color.Z, alpha)));
-                }
-                break;
-            }
-
-            case "Sentry":
-            {
-                Span<Vector2> corners = [outerMin, new Vector2(outerMax.X, outerMin.Y), outerMax, new Vector2(outerMin.X, outerMax.Y)];
-                drawList.AddRect(outerMin, outerMax, ImGui.GetColorU32(new Vector4(color.X, color.Y, color.Z, 0.3f)), r, ImDrawFlags.None, thickness * 0.6f);
-
-                const float secondsPerCorner = 0.6f;
-                var cycle = (float)ImGui.GetTime() / secondsPerCorner;
-                var index = (int)cycle % corners.Length;
-                var localT = cycle - MathF.Floor(cycle);
-                var from = corners[index];
-                var to = corners[(index + 1) % corners.Length];
-                drawList.AddCircleFilled(Vector2.Lerp(from, to, localT), thickness, col);
-                break;
-            }
-
-            case "Anchor":
-            {
-                drawList.AddRect(outerMin, outerMax, ImGui.GetColorU32(new Vector4(color.X, color.Y, color.Z, 0.3f)), r, ImDrawFlags.None, thickness * 0.6f);
-                Span<float> anchorT = [0f, 0.25f, 0.5f, 0.75f];
-                var time = (float)ImGui.GetTime();
-                for (var i = 0; i < anchorT.Length; i++)
-                {
-                    var pos = Theme.RoundedRectPerimeterPoint(outerMin, outerSize, r, anchorT[i]);
-                    var breathe = (MathF.Sin((time * 1.8f) + (i * MathF.PI / 2f)) + 1f) / 2f;
-                    drawList.AddCircleFilled(pos, (thickness * 0.6f) + (breathe * thickness * 0.9f), col);
-                }
-                break;
-            }
-
-            case "Pendulum":
-            {
-                drawList.AddRect(outerMin, outerMax, ImGui.GetColorU32(new Vector4(color.X, color.Y, color.Z, 0.3f)), r, ImDrawFlags.None, thickness * 0.6f);
-                var swing = (MathF.Sin((float)ImGui.GetTime() * 1.4f) + 1f) / 2f;
-                var pos = Theme.RoundedRectPerimeterPoint(outerMin, outerSize, r, swing * 0.5f);
-                drawList.AddCircleFilled(pos, thickness * 0.9f, col);
-                break;
-            }
-
-            case "Glitch":
-            {
-                var bucket = (int)((float)ImGui.GetTime() * 6f);
-                var rng = new Random(bucket);
-                var jitter = new Vector2((rng.NextSingle() - 0.5f) * thickness, (rng.NextSingle() - 0.5f) * thickness);
-
-                const int segments = 16;
-                for (var i = 0; i < segments; i++)
-                {
-                    if (rng.NextDouble() < 0.25)
-                        continue;
-
-                    var t0 = i / (float)segments;
-                    var t1 = (i + 0.8f) / segments;
-                    var p0 = Theme.RoundedRectPerimeterPoint(outerMin, outerSize, r, t0) + jitter;
-                    var p1 = Theme.RoundedRectPerimeterPoint(outerMin, outerSize, r, t1) + jitter;
-                    drawList.AddLine(p0, p1, col, thickness);
-                }
-                break;
-            }
-
-            case "Confetti":
-            {
-                drawList.AddRect(outerMin, outerMax, ImGui.GetColorU32(new Vector4(color.X, color.Y, color.Z, 0.25f)), r, ImDrawFlags.None, thickness * 0.5f);
-
-                const int particleCount = 10;
-                const float cycleSeconds = 2.2f;
-                var time = (float)ImGui.GetTime();
-                for (var i = 0; i < particleCount; i++)
-                {
-                    var slotRng = new Random(i * 7919);
-                    var t = (float)slotRng.NextDouble();
-                    var hue = (float)slotRng.NextDouble();
-                    var phase = ((time / cycleSeconds) + (i / (float)particleCount)) % 1f;
-                    var life = MathF.Sin(phase * MathF.PI);
-                    if (life <= 0.02f)
-                        continue;
-
-                    var pos = Theme.RoundedRectPerimeterPoint(outerMin, outerSize, r, t);
-                    var rgb = HsvToRgb(hue, 0.7f, 1f);
-                    drawList.AddCircleFilled(pos, (1.5f + (life * 2f)) * Scale, ImGui.GetColorU32(new Vector4(rgb.X, rgb.Y, rgb.Z, life)));
-                }
-                break;
-            }
-
-            default:                drawList.AddRect(outerMin, outerMax, col, r, ImDrawFlags.None, thickness);
-                break;
-        }
-    }
-
-    private static Vector3 HsvToRgb(float h, float s, float v)
-    {
-        var i = (int)(h * 6f);
-        var f = (h * 6f) - i;
-        var p = v * (1f - s);
-        var q = v * (1f - (f * s));
-        var t = v * (1f - ((1f - f) * s));
-        return (((i % 6) + 6) % 6) switch
-        {
-            0 => new Vector3(v, t, p),
-            1 => new Vector3(q, v, p),
-            2 => new Vector3(p, v, t),
-            3 => new Vector3(p, q, v),
-            4 => new Vector3(t, p, v),
-            _ => new Vector3(v, p, q),
-        };
-    }
 
     private async Task LoadDjProfileAvatarAsync(string profileId, string avatarBase64)
     {
@@ -2586,21 +2364,68 @@ public sealed class DjDeckWindow : Window, IDisposable
             }
         }
 
-        if (!readOnly && availability.Any(d => d.IsAvailable))
+        if (readOnly || !availability.Any(d => d.IsAvailable))
+            return;
+
+        var zone = plugin.EditState.DjEditAvailabilityZone;
+
+        ImGui.Spacing();
+        for (var i = 0; i < 7 && i < availability.Count; i++)
         {
-            ImGui.Spacing();
-            for (var i = 0; i < 7 && i < availability.Count; i++)
+            if (!availability[i].IsAvailable)
+                continue;
+
+            ImGui.PushID(i);
+            ImGui.AlignTextToFramePadding();
+            ImGui.TextDisabled(DjAvailabilityDayLabels[i]);
+            ImGui.SameLine(48f * Scale);
+
+            var (start, end, _) = AvailabilitySlots.Parse(availability[i].TimeNote);
+            var startOption = start >= 0 ? start + 1 : 0;
+
+            ImGui.SetNextItemWidth(110f * Scale);
+            if (HourCombo("##dayStart", AvailabilitySlots.StartOptions, ref startOption))
             {
-                if (!availability[i].IsAvailable)
+                availability[i].TimeNote = startOption <= 0
+                    ? string.Empty
+                    : AvailabilitySlots.Compose(
+                        startOption - 1,
+                        start >= 0 ? end : AvailabilitySlots.DefaultEndFor(startOption - 1),
+                        zone);
+            }
+
+            ImGui.SameLine();
+            ImGui.AlignTextToFramePadding();
+            ImGui.TextDisabled("to");
+            ImGui.SameLine();
+
+            var endOption = start >= 0 ? end : 0;
+            ImGui.BeginDisabled(start < 0);
+            ImGui.SetNextItemWidth(110f * Scale);
+            if (HourCombo("##dayEnd", AvailabilitySlots.Hours, ref endOption) && start >= 0)
+                availability[i].TimeNote = AvailabilitySlots.Compose(start, endOption, zone);
+            ImGui.EndDisabled();
+
+            ImGui.PopID();
+        }
+
+        static bool HourCombo(string id, string[] options, ref int selected)
+        {
+            var changed = false;
+            if (!ImGui.BeginCombo(id, options[Math.Clamp(selected, 0, options.Length - 1)]))
+                return false;
+
+            for (var i = 0; i < options.Length; i++)
+            {
+                if (!ImGui.Selectable(options[i], i == selected))
                     continue;
 
-                ImGui.PushID(i);
-                ImGui.SetNextItemWidth(200f * Scale);
-                var note = availability[i].TimeNote ?? string.Empty;
-                if (ImGui.InputTextWithHint("##dayNote", $"{DjAvailabilityDayLabels[i]} time (optional, e.g. 8-10pm EST)", ref note, 40))
-                    availability[i].TimeNote = note;
-                ImGui.PopID();
+                selected = i;
+                changed = true;
             }
+
+            ImGui.EndCombo();
+            return changed;
         }
     }
 
@@ -2801,36 +2626,31 @@ public sealed class DjDeckWindow : Window, IDisposable
         ImGui.SetCursorScreenPos(new Vector2(pos.X, pos.Y + panelHeight));
     }
 
-    /// Genres/Venues/Aetherphone # in three fixed slots - left/middle/right, always in that order and always
-    /// at the same position regardless of which are actually populated - with a soft fading vertical divider
-    /// fixed at each of the two slot boundaries.
+    /// Genres/Venues in two fixed slots - left/right, always in that order and always at the same position
+    /// regardless of which are actually populated - with a soft fading vertical divider at the boundary.
     private void DrawDjProfileStatsRow(DjProfileDetailDto profile, float rowWidth)
     {
         var hasGenres = profile.Genres.Count > 0;
         var hasVenues = profile.SavedVenues.Count > 0;
-        var hasAetherphone = !string.IsNullOrWhiteSpace(profile.AetherphoneNumber);
-        if (!hasGenres && !hasVenues && !hasAetherphone)
+        if (!hasGenres && !hasVenues)
             return;
 
         var gap = 20f * Scale;
-        var slotWidth = (rowWidth - (gap * 2f)) / 3f;
+        var slotWidth = (rowWidth - gap) / 2f;
         var rowStartLocalPos = ImGui.GetCursorPos();
         var rowStartScreenPos = ImGui.GetCursorScreenPos();
         var maxSlotHeight = 0f;
 
-        DrawSlot(0, hasGenres, "GENRES", Theme.FixedCyan, profile.Genres.Select(CapitalizeWords).ToList(), null, null);
-        DrawSlot(1, hasVenues, "VENUES", Theme.FixedOrange, null, null, profile.SavedVenues);
-        DrawSlot(2, hasAetherphone, "AETHERPHONE #", Theme.FixedCyan, null, profile.AetherphoneNumber, null);
+        DrawSlot(0, hasGenres, "GENRES", Theme.FixedCyan, profile.Genres.Select(CapitalizeWords).ToList(), null);
+        DrawSlot(1, hasVenues, "VENUES", Theme.FixedOrange, null, profile.SavedVenues);
 
-        for (var i = 0; i < 2; i++)
-        {
-            var dividerX = rowStartScreenPos.X + ((i + 1) * slotWidth) + (i * gap) + (gap / 2f);
-            DrawSleekVerticalDivider(new Vector2(dividerX, rowStartScreenPos.Y), maxSlotHeight, Theme.Border);
-        }
+        DrawSleekVerticalDivider(
+            new Vector2(rowStartScreenPos.X + slotWidth + (gap / 2f), rowStartScreenPos.Y),
+            maxSlotHeight, Theme.Border);
 
         ImGui.SetCursorPos(new Vector2(rowStartLocalPos.X, rowStartLocalPos.Y + maxSlotHeight));
 
-        void DrawSlot(int index, bool has, string label, Vector4 accent, List<string>? chips, string? copyValue, List<SavedVenueDto>? venueChips)
+        void DrawSlot(int index, bool has, string label, Vector4 accent, List<string>? chips, List<SavedVenueDto>? venueChips)
         {
             ImGui.SetCursorPos(new Vector2(rowStartLocalPos.X + (index * (slotWidth + gap)), rowStartLocalPos.Y));
             ImGui.BeginGroup();
@@ -2842,8 +2662,6 @@ public sealed class DjDeckWindow : Window, IDisposable
                     DrawChipRow(chips, slotWidth, accent);
                 else if (venueChips != null)
                     DrawVenueChipRow(venueChips, slotWidth, accent);
-                else if (copyValue != null)
-                    DrawClickToCopyChip(copyValue, accent);
             }
             else
             {
@@ -3362,11 +3180,12 @@ public sealed class DjDeckWindow : Window, IDisposable
             day.TimeNote = null;
         }
 
+        plugin.EditState.DjEditAvailabilityZone = AvailabilitySlots.DefaultZone;
+
         djEditFrameColor = new Vector3(0.25f, 0.85f, 0.95f);
         djEditFrameStyle = "Solid";
         djEditNameEffect = "None";
         djEditNameColor = new Vector3(0.25f, 0.85f, 0.95f);
-        djEditAetherphoneNumber = string.Empty;
         djEditLinkedCharacterNames.Clear();
         djEditShowLinkedCharacters = false;
         djLinkCodeGenerated = null;
@@ -3402,11 +3221,13 @@ public sealed class DjDeckWindow : Window, IDisposable
             djEditAvailability[i].TimeNote = detail.Availability[i].TimeNote;
         }
 
+        plugin.EditState.DjEditAvailabilityZone =
+            AvailabilitySlots.ZoneOf(djEditAvailability) ?? AvailabilitySlots.DefaultZone;
+
         djEditFrameColor = new Vector3(detail.FrameColorR, detail.FrameColorG, detail.FrameColorB);
         djEditFrameStyle = string.IsNullOrEmpty(detail.FrameStyle) ? "Solid" : detail.FrameStyle;
         djEditNameEffect = string.IsNullOrEmpty(detail.NameEffect) ? "None" : detail.NameEffect;
         djEditNameColor = new Vector3(detail.NameColorR, detail.NameColorG, detail.NameColorB);
-        djEditAetherphoneNumber = detail.AetherphoneNumber ?? string.Empty;
         djEditLinkedCharacterNames.Clear();
         djEditLinkedCharacterNames.AddRange(detail.LinkedCharacterNames);
         djEditShowLinkedCharacters = detail.ShowLinkedCharacters;
@@ -3712,284 +3533,6 @@ public sealed class DjDeckWindow : Window, IDisposable
         Theme.EndCard();
     }
 
-    /// Draws a DJ's name at an explicit size (fontScale relative to the Header font's own natural size, same
-    /// "AddText(font, size, ...)" technique as UiHelpers.DrawScaledIcon - no separate big-name font asset
-    /// needed) in whichever text effect they picked.
-    private void DrawDjName(string text, Vector4 color, string effect, float fontScale)
-    {
-        ImFontPtr font;
-        using (plugin.Fonts.HeaderLarge.PushSafe())
-            font = ImGui.GetFont();
-
-        using (plugin.Fonts.Header.PushSafe())
-        {
-            var drawFontSize = ImGui.GetFontSize() * fontScale;
-            var drawList = ImGui.GetWindowDrawList();
-            var pos = ImGui.GetCursorScreenPos();
-
-            switch (effect)
-            {
-                case "Pulse":
-                {
-                    var pulse = 0.6f + (0.4f * MathF.Sin((float)ImGui.GetTime() * 2.2f));
-                    drawList.AddText(font, drawFontSize, pos, ImGui.GetColorU32(new Vector4(color.X, color.Y, color.Z, pulse)), text);
-                    break;
-                }
-
-                case "Rainbow":
-                {
-                    var hue = (float)(ImGui.GetTime() * 0.15 % 1.0);
-                    var rainbow = HsvToRgb(hue, 0.7f, 1f);
-                    drawList.AddText(font, drawFontSize, pos, ImGui.GetColorU32(new Vector4(rainbow.X, rainbow.Y, rainbow.Z, 1f)), text);
-                    break;
-                }
-
-                case "Wave":
-                {
-                    var x = pos.X;
-                    var time = (float)ImGui.GetTime();
-                    for (var i = 0; i < text.Length; i++)
-                    {
-                        var ch = text[i].ToString();
-                        var charWidth = ImGui.CalcTextSize(ch).X * fontScale;
-                        var yOffset = MathF.Sin((time * 4f) + (i * 0.6f)) * 3f * Scale;
-                        drawList.AddText(font, drawFontSize, new Vector2(x, pos.Y + yOffset), ImGui.GetColorU32(color), ch);
-                        x += charWidth;
-                    }
-                    break;
-                }
-
-                case "Gradient":
-                {
-                    var x = pos.X;
-                    var tint = new Vector4(MathF.Min(1f, color.X + 0.4f), MathF.Min(1f, color.Y + 0.4f), MathF.Min(1f, color.Z + 0.4f), 1f);
-                    for (var i = 0; i < text.Length; i++)
-                    {
-                        var ch = text[i].ToString();
-                        var charWidth = ImGui.CalcTextSize(ch).X * fontScale;
-                        var t = text.Length > 1 ? i / (float)(text.Length - 1) : 0f;
-                        var segColor = Vector4.Lerp(color, tint, t);
-                        drawList.AddText(font, drawFontSize, new Vector2(x, pos.Y), ImGui.GetColorU32(segColor), ch);
-                        x += charWidth;
-                    }
-                    break;
-                }
-
-                case "Glow":
-                {
-                    var haloColor = ImGui.GetColorU32(new Vector4(color.X, color.Y, color.Z, 0.22f));
-                    var haloOffset = 2.2f * Scale;
-                    Span<Vector2> haloDirs = [new(-1, 0), new(1, 0), new(0, -1), new(0, 1)];
-                    foreach (var d in haloDirs)
-                        drawList.AddText(font, drawFontSize, pos + (d * haloOffset), haloColor, text);
-                    drawList.AddText(font, drawFontSize, pos, ImGui.GetColorU32(color), text);
-                    break;
-                }
-
-                case "Shimmer":
-                {
-                    var x = pos.X;
-                    var totalWidth = ImGui.CalcTextSize(text).X * fontScale;
-                    var sweep = ((float)(ImGui.GetTime() * 0.6 % 1.6)) - 0.3f;
-                    for (var i = 0; i < text.Length; i++)
-                    {
-                        var ch = text[i].ToString();
-                        var charWidth = ImGui.CalcTextSize(ch).X * fontScale;
-                        var charT = totalWidth > 0f ? (x - pos.X + (charWidth / 2f)) / totalWidth : 0f;
-                        var dist = MathF.Abs(charT - sweep);
-                        var highlight = MathF.Max(0f, 1f - (dist * 4f));
-                        var segColor = Vector4.Lerp(color, new Vector4(1f, 1f, 1f, 1f), highlight);
-                        drawList.AddText(font, drawFontSize, new Vector2(x, pos.Y), ImGui.GetColorU32(segColor), ch);
-                        x += charWidth;
-                    }
-                    break;
-                }
-
-                case "Chase":
-                {
-                    var x = pos.X;
-                    var timeOffset = (float)(ImGui.GetTime() * 0.4 % 1.0);
-                    var tint = new Vector4(MathF.Min(1f, color.X + 0.4f), MathF.Min(1f, color.Y + 0.4f), MathF.Min(1f, color.Z + 0.4f), 1f);
-                    for (var i = 0; i < text.Length; i++)
-                    {
-                        var ch = text[i].ToString();
-                        var charWidth = ImGui.CalcTextSize(ch).X * fontScale;
-                        var t = text.Length > 1 ? i / (float)(text.Length - 1) : 0f;
-                        var blend = (MathF.Sin((t + timeOffset) * MathF.PI * 2f) + 1f) / 2f;
-                        var segColor = Vector4.Lerp(color, tint, blend);
-                        drawList.AddText(font, drawFontSize, new Vector2(x, pos.Y), ImGui.GetColorU32(segColor), ch);
-                        x += charWidth;
-                    }
-                    break;
-                }
-
-                case "Flicker":
-                {
-                    var t = (float)ImGui.GetTime();
-                    var flicker = 0.65f + (0.35f * MathF.Sin(t * 13f) * MathF.Sin(t * 7f));
-                    drawList.AddText(font, drawFontSize, pos, ImGui.GetColorU32(new Vector4(color.X, color.Y, color.Z, MathF.Max(0.3f, flicker))), text);
-                    break;
-                }
-
-                case "Typewriter":
-                {
-                    const float cycleSeconds = 3.2f;
-                    const float holdFraction = 0.25f;                    var cyclePos = (float)(ImGui.GetTime() % cycleSeconds) / cycleSeconds;
-                    var revealPortion = MathF.Min(1f, cyclePos / (1f - holdFraction));
-                    var revealCount = (int)MathF.Ceiling(revealPortion * text.Length);
-                    var showCursor = ((int)(ImGui.GetTime() * 2f) % 2) == 0 && revealCount < text.Length;
-
-                    var x = pos.X;
-                    for (var i = 0; i < revealCount; i++)
-                    {
-                        var ch = text[i].ToString();
-                        var charWidth = ImGui.CalcTextSize(ch).X * fontScale;
-                        drawList.AddText(font, drawFontSize, new Vector2(x, pos.Y), ImGui.GetColorU32(color), ch);
-                        x += charWidth;
-                    }
-                    if (showCursor)
-                        drawList.AddLine(new Vector2(x, pos.Y), new Vector2(x, pos.Y + drawFontSize), ImGui.GetColorU32(color), 2f * Scale);
-                    break;
-                }
-
-                case "Marquee":
-                {
-                    var textWidth = ImGui.CalcTextSize(text).X * fontScale;
-                    var gap = textWidth * 0.6f + (20f * Scale);
-                    var cycleWidth = textWidth + gap;
-                    var scrollX = ((float)ImGui.GetTime() * 40f * Scale) % cycleWidth;
-
-                    drawList.PushClipRect(pos, pos + new Vector2(textWidth, drawFontSize), true);
-                    drawList.AddText(font, drawFontSize, new Vector2(pos.X - scrollX, pos.Y), ImGui.GetColorU32(color), text);
-                    drawList.AddText(font, drawFontSize, new Vector2(pos.X - scrollX + cycleWidth, pos.Y), ImGui.GetColorU32(color), text);
-                    drawList.PopClipRect();
-                    break;
-                }
-
-                case "Glitch":
-                {
-                    var bucket = (int)((float)ImGui.GetTime() * 8f);
-                    var x = pos.X;
-                    for (var i = 0; i < text.Length; i++)
-                    {
-                        var ch = text[i].ToString();
-                        var charWidth = ImGui.CalcTextSize(ch).X * fontScale;
-                        var charRng = new Random((bucket * 131) + i);
-                        var jitterX = ((float)charRng.NextDouble() - 0.5f) * 3f * Scale;
-                        var jitterY = ((float)charRng.NextDouble() - 0.5f) * 3f * Scale;
-                        var corrupted = charRng.NextDouble() < 0.12;
-                        var charColor = corrupted ? new Vector4(1f, 1f, 1f, 0.9f) : color;
-                        drawList.AddText(font, drawFontSize, new Vector2(x + jitterX, pos.Y + jitterY), ImGui.GetColorU32(charColor), ch);
-                        x += charWidth;
-                    }
-                    break;
-                }
-
-                case "Outline":
-                {
-                    var outlineColor = ImGui.GetColorU32(new Vector4(color.X * 0.25f, color.Y * 0.25f, color.Z * 0.25f, 1f));
-                    var outlineOffset = 1.4f * Scale;
-                    Span<Vector2> dirs = [new(-1, -1), new(1, -1), new(-1, 1), new(1, 1), new(-1, 0), new(1, 0), new(0, -1), new(0, 1)];
-                    foreach (var d in dirs)
-                        drawList.AddText(font, drawFontSize, pos + (d * outlineOffset), outlineColor, text);
-                    drawList.AddText(font, drawFontSize, pos, ImGui.GetColorU32(color), text);
-                    break;
-                }
-
-                case "Underline":
-                {
-                    drawList.AddText(font, drawFontSize, pos, ImGui.GetColorU32(color), text);
-                    var underlineWidth = ImGui.CalcTextSize(text).X * fontScale;
-                    var lineY = pos.Y + drawFontSize + (2f * Scale);
-                    drawList.AddLine(new Vector2(pos.X, lineY), new Vector2(pos.X + underlineWidth, lineY), ImGui.GetColorU32(color), 2f * Scale);
-                    drawList.AddCircleFilled(new Vector2(pos.X, lineY), 2.2f * Scale, ImGui.GetColorU32(color));
-                    drawList.AddCircleFilled(new Vector2(pos.X + underlineWidth, lineY), 2.2f * Scale, ImGui.GetColorU32(color));
-                    break;
-                }
-
-                case "Embossed":
-                {
-                    var shadowOffset = 1.6f * Scale;
-                    var shadowColor = ImGui.GetColorU32(new Vector4(0f, 0f, 0f, 0.55f));
-                    var highlightColor = ImGui.GetColorU32(new Vector4(1f, 1f, 1f, 0.35f));
-                    drawList.AddText(font, drawFontSize, pos + new Vector2(shadowOffset, shadowOffset), shadowColor, text);
-                    drawList.AddText(font, drawFontSize, pos - new Vector2(shadowOffset, shadowOffset), highlightColor, text);
-                    drawList.AddText(font, drawFontSize, pos, ImGui.GetColorU32(color), text);
-                    break;
-                }
-
-                case "Cascade":
-                {
-                    const float cycleSeconds = 2.2f;
-                    const float dropDuration = 0.45f;
-                    var time = (float)ImGui.GetTime();
-                    var x = pos.X;
-                    for (var i = 0; i < text.Length; i++)
-                    {
-                        var ch = text[i].ToString();
-                        var charWidth = ImGui.CalcTextSize(ch).X * fontScale;
-                        var staggerStart = i * 0.05f;
-                        var localT = (time + cycleSeconds - staggerStart) % cycleSeconds;
-                        var dropProgress = Math.Clamp(localT / dropDuration, 0f, 1f);
-                        var eased = 1f - MathF.Pow(1f - dropProgress, 3f);
-                        var yOffset = (1f - eased) * -12f * Scale;
-                        drawList.AddText(font, drawFontSize, new Vector2(x, pos.Y + yOffset), ImGui.GetColorU32(color), ch);
-                        x += charWidth;
-                    }
-                    break;
-                }
-
-                case "Heatwave":
-                {
-                    var x = pos.X;
-                    var time = (float)ImGui.GetTime();
-                    var warm = new Vector4(MathF.Min(1f, color.X + 0.3f), color.Y, MathF.Max(0f, color.Z - 0.2f), 1f);
-                    for (var i = 0; i < text.Length; i++)
-                    {
-                        var ch = text[i].ToString();
-                        var charWidth = ImGui.CalcTextSize(ch).X * fontScale;
-                        var wobble = MathF.Sin((time * 5f) + (i * 1.1f)) * 1.5f * Scale;
-                        var warmth = (MathF.Sin((time * 2f) + (i * 0.4f)) + 1f) / 2f;
-                        var charColor = Vector4.Lerp(color, warm, warmth * 0.6f);
-                        drawList.AddText(font, drawFontSize, new Vector2(x + wobble, pos.Y), ImGui.GetColorU32(charColor), ch);
-                        x += charWidth;
-                    }
-                    break;
-                }
-
-                case "Blink":
-                {
-                    const float onSeconds = 1.6f;
-                    const float offSeconds = 0.35f;
-                    var cyclePos = (float)ImGui.GetTime() % (onSeconds + offSeconds);
-                    if (cyclePos < onSeconds)
-                        drawList.AddText(font, drawFontSize, pos, ImGui.GetColorU32(color), text);
-                    break;
-                }
-
-                case "Split":
-                {
-                    var x = pos.X;
-                    var tint = new Vector4(MathF.Min(1f, color.X + 0.45f), MathF.Min(1f, color.Y + 0.45f), MathF.Min(1f, color.Z + 0.45f), 1f);
-                    for (var i = 0; i < text.Length; i++)
-                    {
-                        var ch = text[i].ToString();
-                        var charWidth = ImGui.CalcTextSize(ch).X * fontScale;
-                        var charColor = i % 2 == 0 ? color : tint;
-                        drawList.AddText(font, drawFontSize, new Vector2(x, pos.Y), ImGui.GetColorU32(charColor), ch);
-                        x += charWidth;
-                    }
-                    break;
-                }
-
-                default:                    drawList.AddText(font, drawFontSize, pos, ImGui.GetColorU32(color), text);
-                    break;
-            }
-
-            var textSize = ImGui.CalcTextSize(text) * fontScale;
-            ImGui.Dummy(textSize);
-        }
-    }
 
     private void DrawDjProfileImagePicker(string label, string slot, IDalamudTextureWrap? preview, int targetWidth, int targetHeight)
     {
@@ -4080,6 +3623,12 @@ public sealed class DjDeckWindow : Window, IDisposable
         }
 
         pendingDjProfileEditExit = destination;
+        SendDjProfileSave();
+    }
+
+    /// The listing save itself, with no navigation attached.
+    private void SendDjProfileSave()
+    {
         if (djProfileSaveSending)
             return;
 
@@ -4102,7 +3651,6 @@ public sealed class DjDeckWindow : Window, IDisposable
             NameColorR = djEditNameColor.X,
             NameColorG = djEditNameColor.Y,
             NameColorB = djEditNameColor.Z,
-            AetherphoneNumber = djEditAetherphoneNumber.Trim(),
             ShowLinkedCharacters = djEditShowLinkedCharacters,
         });
     }
@@ -4144,10 +3692,6 @@ public sealed class DjDeckWindow : Window, IDisposable
         }
         WrappedInput.Multiline("##djEditBio", ref djEditBioBuffer, 300, djEditBioBoxSize);
 
-        ImGui.Spacing();
-        ImGui.TextDisabled("Aetherphone # (optional)");
-        ImGui.SetNextItemWidth(basicInfoWidth);
-        ImGui.InputTextWithHint("##djEditAetherphoneNumber", "Shown on your profile for listeners to copy", ref djEditAetherphoneNumber, 32);
         EndSettingsPanel();
 
         ImGui.Spacing();
@@ -4461,11 +4005,18 @@ public sealed class DjDeckWindow : Window, IDisposable
                 ImGui.TextColored(Theme.CyanAccent, $"v{entry.Version}");
             ImGui.Spacing();
 
-            foreach (var highlight in entry.Highlights)
+            foreach (var group in entry.Groups)
             {
-                ImGui.Bullet();
-                ImGui.SameLine();
-                ImGui.TextWrapped(highlight);
+                ImGui.TextDisabled(group.Heading);
+
+                foreach (var line in group.Lines)
+                {
+                    ImGui.Bullet();
+                    ImGui.SameLine();
+                    ImGui.TextWrapped(line);
+                }
+
+                ImGui.Spacing();
             }
 
             if (i < ChangelogData.Entries.Length - 1)
@@ -4503,6 +4054,20 @@ public sealed class DjDeckWindow : Window, IDisposable
             plugin.Configuration.Save();
         });
         ImGui.TextDisabled("Scales the whole window - handy on a bigger or smaller monitor.");
+
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        var useNewDesign = plugin.Configuration.UseNewDesign;
+        if (SettingsToggle.Draw("##useNewDesign", "Use EchoMix 2.0 design (preview)", ref useNewDesign))
+        {
+            plugin.Configuration.UseNewDesign = useNewDesign;
+            plugin.Configuration.Save();
+        }
+        ImGui.TextDisabled("A redesigned interface with a navigation sidebar. Still in progress -");
+        ImGui.TextDisabled("screens marked \"Classic\" haven't been redesigned yet. Toggle back anytime.");
+
         EndSettingsPanel();
 
         ImGui.Spacing();
@@ -4734,40 +4299,6 @@ public sealed class DjDeckWindow : Window, IDisposable
         }
     }
 
-    /// A single pill-shaped chip - same rounded-rect-behind-text visual as DrawChipRow's genre/venue chips -
-    /// that copies itself to the OS clipboard on click, with a hand cursor and a brighter fill on hover, plus
-    /// a brief "Copied!" confirmation next to it.
-    private void DrawClickToCopyChip(string label, Vector4 accent)
-    {
-        var padX = 8f * Scale;
-        var padY = 3f * Scale;
-        var lineHeight = ImGui.GetTextLineHeight() + (padY * 2f);
-        var chipSize = new Vector2(ImGui.CalcTextSize(label).X + (padX * 2f), lineHeight);
-
-        var pos = ImGui.GetCursorScreenPos();
-        var hovered = ImGui.IsMouseHoveringRect(pos, pos + chipSize);
-        var drawList = ImGui.GetWindowDrawList();
-        drawList.AddRectFilled(pos, pos + chipSize, ImGui.GetColorU32(new Vector4(accent.X, accent.Y, accent.Z, hovered ? 0.30f : 0.18f)), lineHeight / 2f);
-        drawList.AddText(pos + new Vector2(padX, padY), ImGui.GetColorU32(accent), label);
-        ImGui.Dummy(chipSize);
-
-        if (hovered)
-        {
-            ImGui.SetMouseCursor(ImGuiMouseCursor.Hand);
-            if (ImGui.IsMouseClicked(ImGuiMouseButton.Left))
-            {
-                ImGui.SetClipboardText(label);
-                djProfileNumberCopiedAt = ImGui.GetTime();
-            }
-        }
-
-        if (djProfileNumberCopiedAt is { } copiedAt && ImGui.GetTime() - copiedAt < 1.5)
-        {
-            ImGui.SameLine();
-            ImGui.TextColored(Theme.CyanAccent, "Copied!");
-        }
-    }
-
     private static readonly string[] HousingAreaOptions = { "The Lavender Beds", "Mist", "The Goblet", "Shirogane", "Empyreum" };
     private static readonly string[] WardOptions = Enumerable.Range(1, 30).Select(n => n.ToString()).ToArray();
     private static readonly string[] PlotOptions = Enumerable.Range(1, 60).Select(n => n.ToString()).ToArray();
@@ -4868,7 +4399,7 @@ public sealed class DjDeckWindow : Window, IDisposable
     /// The Broadcast tab's venue-address section - only ever drawn for a publicly-listed show (see the
     /// "PUBLIC LISTING" panel's own call site), since a private show is never shown anywhere an address would
     /// matter (no browse grid card, no Lifestream Visit target).
-    private void DrawVenueAddressSection(string characterName)
+    public void EnsureOwnSavedVenuesRequested(string characterName)
     {
         if (ownSavedVenuesCache == null && !ownSavedVenuesRequestSent && !string.IsNullOrEmpty(characterName))
         {
@@ -4882,6 +4413,447 @@ public sealed class DjDeckWindow : Window, IDisposable
             ownSavedVenuesDetailRequestSent = true;
             plugin.AudioHostClient.Send(MessageType.GetDjProfileDetail, new GetDjProfileDetailMessage { Id = ownSummary.Id, RequesterCharacterName = characterName });
         }
+    }
+
+    /// The DJ's own saved venues once EnsureOwnSavedVenuesRequested has resolved, or null while the two-hop
+    /// fetch is still in flight (which is a real state - the form shows manual entry).
+    public IReadOnlyList<SavedVenueDto>? OwnSavedVenues => ownSavedVenuesCache;
+
+    /// Opens the show-image file picker and crop dialog.
+    public void OpenShowImagePicker() => OpenShowImageDialog();
+
+    /// A public show's card image, decoded on first ask and cached thereafter.
+    public IDalamudTextureWrap? PublicShowImage(PublicShowEntryDto show)
+    {
+        if (string.IsNullOrEmpty(show.ImageBase64))
+            return null;
+
+        bool hasEntry;
+        IDalamudTextureWrap? texture;
+        var shouldStartLoad = false;
+
+        lock (publicShowImageGate)
+        {
+            hasEntry = publicShowImageCache.TryGetValue(show.RoomCode, out texture);
+            if (!hasEntry)
+                shouldStartLoad = publicShowImageLoading.Add(show.RoomCode);
+        }
+
+        if (shouldStartLoad)
+            _ = LoadPublicShowImageAsync(show.RoomCode, show.ImageBase64);
+
+        return hasEntry ? texture : null;
+    }
+
+    /// Joins a show straight from a browse card.
+    public void JoinPublicShow(string roomCode, string password) => ConnectToRoom(roomCode, password);
+
+    /// A DJ's avatar, decoded on first ask and cached thereafter - same contract and the same single-owner
+    /// reasoning as PublicShowImage above.
+    public IDalamudTextureWrap? DjAvatarImage(string cacheKey, string? avatarBase64)
+    {
+        if (string.IsNullOrEmpty(avatarBase64))
+            return null;
+
+        bool hasEntry;
+        IDalamudTextureWrap? texture;
+        var shouldStartLoad = false;
+
+        lock (djProfileImageGate)
+        {
+            hasEntry = djProfileAvatarCache.TryGetValue(cacheKey, out texture);
+            if (!hasEntry)
+                shouldStartLoad = djProfileAvatarLoading.Add(cacheKey);
+        }
+
+        if (shouldStartLoad)
+            _ = LoadDjProfileAvatarAsync(cacheKey, avatarBase64);
+
+        return hasEntry ? texture : null;
+    }
+
+    /// Asks the relay for a profile's detail WITHOUT navigating 1.0's view.
+    public void RequestDjProfileDetail(string profileId, string requesterCharacterName) =>
+        plugin.AudioHostClient.Send(MessageType.GetDjProfileDetail,
+            new GetDjProfileDetailMessage { Id = profileId, RequesterCharacterName = requesterCharacterName });
+
+    /// A DJ's profile banner.
+    public IDalamudTextureWrap? DjBannerImage(string profileId, string? bannerBase64)
+    {
+        if (string.IsNullOrEmpty(bannerBase64))
+            return null;
+
+        bool hasTexture;
+        IDalamudTextureWrap? texture;
+        var shouldStartLoad = false;
+
+        lock (djProfileImageGate)
+        {
+            hasTexture = djProfileBannerTextureForId == profileId;
+            texture = djProfileBannerTexture;
+
+            if (djProfileBannerTextureForId != profileId && !djProfileBannerLoading)
+            {
+                djProfileBannerLoading = true;
+                shouldStartLoad = true;
+            }
+        }
+
+        if (shouldStartLoad)
+            _ = LoadDjProfileBannerAsync(profileId, bannerBase64);
+
+        return hasTexture ? texture : null;
+    }
+
+
+    /// Loads the editor's buffers from a profile WITHOUT navigating.
+    public void SeedDjListingEditorFrom(DjProfileDetailDto profile)
+    {
+        SeedDjEditBuffersFrom(profile);
+        editingDjProfileId = profile.Id;
+    }
+
+    /// Clears the buffers for a listing that does not exist yet.
+    public void BeginNewDjListing() => ResetDjEditBuffersForNewProfile();
+
+    /// Null while creating a listing that has never been saved.
+    public string? EditingDjListingId => editingDjProfileId;
+
+    public IDalamudTextureWrap? DjEditAvatarPreview => djEditAvatarPreview;
+
+    public IDalamudTextureWrap? DjEditBannerPreview => djEditBannerPreview;
+
+    public string? DjEditImageError => djEditImageError;
+
+    public void OpenDjEditAvatarPicker() =>
+        OpenDjProfileImageDialog("avatar", ShowImageProcessor.DjAvatarSize, ShowImageProcessor.DjAvatarSize);
+
+    public void OpenDjEditBannerPicker() =>
+        OpenDjProfileImageDialog("banner", ShowImageProcessor.DjBannerWidth, ShowImageProcessor.DjBannerHeight);
+
+    public bool IsSavingDjListing => djProfileSaveSending;
+
+    public DjProfileSaveResultMessage? DjListingSaveResult => djProfileSaveResult;
+
+    /// Saves the listing.
+    public void SaveDjListing() => SendDjProfileSave();
+
+    /// The width the bio box is wrapped to, which the save needs in order to take the soft breaks back out
+    /// again.
+    public float DjEditBioWrapWidth
+    {
+        get => djEditBioWrapWidth;
+        set => djEditBioWrapWidth = value;
+    }
+
+    /// True once, after a bio is loaded from an existing profile rather than typed - the caller folds it to
+    /// the box's width on that frame.
+    public bool ConsumeDjEditBioWrapPending()
+    {
+        if (!djEditBioWrapPending)
+            return false;
+
+        djEditBioWrapPending = false;
+        return true;
+    }
+
+    public string? DjLinkCode => djLinkCodeGenerated;
+
+    public float DjLinkCodeExpiresInSeconds => djLinkCodeExpiresInSeconds;
+
+    public bool IsGeneratingDjLinkCode => djLinkCodeGenerating;
+
+    public string? DjLinkCodeError => djLinkCodeError;
+
+    public void GenerateDjLinkCode()
+    {
+        if (djLinkCodeGenerating || editingDjProfileId == null)
+            return;
+
+        djLinkCodeGenerating = true;
+        djLinkCodeError = null;
+        plugin.AudioHostClient.Send(MessageType.GenerateProfileLinkCode, new GenerateProfileLinkCodeMessage
+        {
+            ProfileId = editingDjProfileId,
+            RequesterCharacterName = Plugin.ObjectTable.LocalPlayer?.Name.TextValue ?? string.Empty,
+        });
+    }
+
+    public bool IsUnlinkPending(string characterName) => djUnlinkPending.Contains(characterName);
+
+    public void UnlinkDjProfileCharacter(string characterName)
+    {
+        if (editingDjProfileId == null || !djUnlinkPending.Add(characterName))
+            return;
+
+        plugin.AudioHostClient.Send(MessageType.UnlinkProfileCharacter, new UnlinkProfileCharacterMessage
+        {
+            ProfileId = editingDjProfileId,
+            RequesterCharacterName = Plugin.ObjectTable.LocalPlayer?.Name.TextValue ?? string.Empty,
+            CharacterNameToRemove = characterName,
+        });
+    }
+
+    public bool IsRedeemingDjLinkCode => djRedeemSending;
+
+    public ProfileLinkRedeemResultMessage? DjLinkRedeemResult => djRedeemResult;
+
+    public void ResetDjLinkRedeem()
+    {
+        djRedeemCodeBuffer = string.Empty;
+        djRedeemResult = null;
+    }
+
+    public void RedeemDjLinkCode(string code)
+    {
+        if (djRedeemSending || string.IsNullOrWhiteSpace(code))
+            return;
+
+        djRedeemSending = true;
+        djRedeemResult = null;
+        plugin.AudioHostClient.Send(MessageType.RedeemProfileLinkCode, new RedeemProfileLinkCodeMessage
+        {
+            Code = code.Trim(),
+            RequesterCharacterName = Plugin.ObjectTable.LocalPlayer?.Name.TextValue ?? string.Empty,
+        });
+    }
+
+    /// How many venues a listing may save.
+    public static int MaxDjSavedVenues => MaxSavedVenues;
+
+    /// The avatar frame styles and name effects a DJ can pick, in the order 1.0 offers them - non-animated
+    /// first, animated after, "Solid"/"None" always the default at index 0.
+    public static IReadOnlyList<string> DjFrameStyles => DjFrameStyleOptions;
+
+    public static IReadOnlyList<string> DjNameEffects => DjNameEffectOptions;
+
+    /// Day labels in relay order (Sun first), matching DjProfileStore's own normalization.
+    public static IReadOnlyList<string> DjAvailabilityDays => DjAvailabilityDayLabels;
+
+    /// Title-cases a genre the way 1.0 does on entry, so the two looks store the same string.
+    public static string TitleCaseGenre(string value) => CapitalizeWords(value);
+
+    public void DeleteDjProfile(string profileId)
+    {
+        djProfileDeleteSending = true;
+        djProfileDeleteResult = null;
+        plugin.AudioHostClient.Send(MessageType.DeleteDjProfile, new DeleteDjProfileMessage
+        {
+            Id = profileId,
+            CharacterName = Plugin.ObjectTable.LocalPlayer?.Name.TextValue ?? string.Empty,
+        });
+    }
+
+    public bool IsDeletingDjProfile => djProfileDeleteSending;
+
+    /// Opens, and draws, 1.0's report popup.
+    public void OpenDjProfileReport()
+    {
+        djProfileReportReasonBuffer = string.Empty;
+        djProfileReportSendResult = null;
+        ImGui.OpenPopup("##reportDjProfilePopup");
+    }
+
+    public void DrawLegacyDjProfileReportPopup(string profileId)
+    {
+        var themeColors = Theme.Push();
+
+        try
+        {
+            DrawDjProfileReportPopup(profileId);
+        }
+        finally
+        {
+            Theme.Pop(themeColors);
+        }
+    }
+
+
+    /// Opens the Report a Bug popup.
+    public void OpenReportBug()
+    {
+        reportBugDescriptionBuffer = string.Empty;
+        reportBugDiscordNameBuffer = plugin.Configuration.LastReportBugDiscordName ?? string.Empty;
+        reportBugSendResult = null;
+        ImGui.OpenPopup(ReportBugPopupId);
+    }
+
+    /// The Report a Bug send/ack state, for 2.0's own dialog (UI/Screens/ReportBugDialog).
+    public bool ReportBugSending => reportBugSending;
+
+    public BugReportResultMessage? ReportBugResult => reportBugSendResult;
+
+    public void ClearReportBugResult() => reportBugSendResult = null;
+
+    /// Sends a report.
+    public void SubmitBugReport(string description, string? discordName)
+    {
+        reportBugSending = true;
+        reportBugSendResult = null;
+
+        plugin.Configuration.LastReportBugDiscordName = discordName?.Trim() ?? string.Empty;
+        plugin.Configuration.Save();
+
+        plugin.AudioHostClient.Send(MessageType.SubmitBugReport, new SubmitBugReportCommand
+        {
+            Description = description.Trim(),
+            DiscordName = string.IsNullOrWhiteSpace(discordName) ? null : discordName.Trim(),
+            PluginVersion = ChangelogData.LatestVersion,
+            CharacterName = Plugin.ObjectTable.LocalPlayer?.Name.TextValue ?? string.Empty,
+            SystemInfo = SystemDiagnostics.Capture(plugin.Configuration.UiScale),
+        });
+    }
+
+    /// Draws it, wrapped in 1.0's palette - same reasoning as DrawLegacyDjProfileReportPopup.
+    public void DrawLegacyReportBugPopup()
+    {
+        var themeColors = Theme.Push();
+
+        try
+        {
+            DrawReportBugPopup();
+        }
+        finally
+        {
+            Theme.Pop(themeColors);
+        }
+    }
+
+    private void DrawReportBugPopup()
+    {
+        if (ImGui.BeginPopup(ReportBugPopupId))
+        {
+            ImGui.SetWindowFontScale(Scale);
+            ImGui.TextColored(Theme.OrangeAccent, "Report a Bug");
+            ImGui.TextDisabled("Sends your AudioHost session log, plugin version, and current");
+            ImGui.TextDisabled("status straight to the developer - nothing else on this PC.");
+            ImGui.Spacing();
+
+            ImGui.TextDisabled("What happened? (optional)");
+
+            ImGui.PushStyleVar(ImGuiStyleVar.FrameBorderSize, 1f);
+            ImGui.PushStyleColor(ImGuiCol.FrameBg, Theme.Background);
+            ImGui.PushStyleColor(ImGuiCol.FrameBgHovered, new Vector4(0.16f, 0.16f, 0.2f, 1f));
+            ImGui.PushStyleColor(ImGuiCol.FrameBgActive, new Vector4(Theme.NeutralAccent.X, Theme.NeutralAccent.Y, Theme.NeutralAccent.Z, 0.25f));
+            ImGui.PushStyleColor(ImGuiCol.Border, new Vector4(Theme.NeutralAccent.X, Theme.NeutralAccent.Y, Theme.NeutralAccent.Z, 0.6f));
+
+            ImGui.SetNextItemWidth(280f * Scale);
+            WrappedInput.Multiline("##reportBugDescription", ref reportBugDescriptionBuffer, 1000, new Vector2(280f, 80f) * Scale);
+
+            ImGui.Spacing();
+            ImGui.TextDisabled("Your Discord name, if you'd like a reply (optional)");
+            ImGui.SetNextItemWidth(280f * Scale);
+            ImGui.InputTextWithHint("##reportBugDiscordName", "e.g. username#0000", ref reportBugDiscordNameBuffer, 64);
+
+            ImGui.PopStyleColor(4);
+            ImGui.PopStyleVar();
+            ImGui.Spacing();
+
+            if (reportBugSending)
+            {
+                ImGui.TextDisabled("Sending...");
+            }
+            else if (PanelButton.Draw("##reportBugSend", null, null, "Send Report", new Vector2(160, 28) * Scale, Theme.OrangeAccent))
+            {
+                reportBugSending = true;
+                reportBugSendResult = null;
+                plugin.Configuration.LastReportBugDiscordName = reportBugDiscordNameBuffer.Trim();
+                plugin.Configuration.Save();
+                plugin.AudioHostClient.Send(MessageType.SubmitBugReport, new SubmitBugReportCommand
+                {
+                    Description = WrappedInput.Unfold(reportBugDescriptionBuffer, WrappedInput.WidthFor(new Vector2(280f, 80f) * Scale)).Trim(),
+                    DiscordName = string.IsNullOrWhiteSpace(reportBugDiscordNameBuffer) ? null : reportBugDiscordNameBuffer.Trim(),
+                    PluginVersion = ChangelogData.LatestVersion,
+                    CharacterName = Plugin.ObjectTable.LocalPlayer?.Name.TextValue ?? string.Empty,
+                    SystemInfo = SystemDiagnostics.Capture(plugin.Configuration.UiScale),
+                });
+            }
+
+            if (reportBugSendResult != null)
+            {
+                ImGui.Spacing();
+                if (reportBugSendResult.Success)
+                    ImGui.TextColored(Theme.CyanAccent, "Sent - thank you!");
+                else
+                    ImGui.TextColored(Theme.OrangeAccent, $"Couldn't send: {reportBugSendResult.Error ?? "unknown error"}");
+            }
+
+            ImGui.EndPopup();
+        }
+    }
+
+    public void RefreshPublicShows() =>
+        plugin.AudioHostClient.Send(MessageType.RequestPublicShows, new object());
+
+    /// Asks the relay for the stats boards.
+    public void RefreshDjStats(string characterName, bool monthOnly) =>
+        plugin.AudioHostClient.Send(MessageType.RequestDjStats,
+            new RequestDjStatsMessage { RequesterCharacterName = characterName, MonthOnly = monthOnly });
+
+    public void RefreshDjProfiles(string characterName) =>
+        plugin.AudioHostClient.Send(MessageType.RequestDjProfiles,
+            new RequestDjProfilesMessage { RequesterCharacterName = characterName });
+
+    /// Distinct known genres across the given lists, for a filter dropdown.
+    internal static List<string> GenreOptions(IEnumerable<IEnumerable<string>> lists) =>
+        ComputeGenreFilterOptions(lists);
+
+    /// Address lines for a venue show's card, formatted exactly as 1.0's grid formats them.
+    internal static (string? Line1, string? Line2) VenueAddressLines(PublicShowEntryDto show) =>
+        FormatVenueAddressLines(show);
+
+    /// The auto-join tracker's live status line, for the 2.0 Listen screen.
+    public string AutoJoinStatusText()
+    {
+        var tracker = plugin.AutoJoinTracker;
+
+        string DisplayNameFor(string? roomCode)
+        {
+            if (roomCode == null)
+                return "a nearby show";
+            var show = plugin.AudioHostClient.LatestPublicShows?.Shows.FirstOrDefault(s => s.RoomCode == roomCode);
+            return show?.ShowName ?? show?.DjName ?? "a nearby show";
+        }
+
+        var suppressed = tracker.SuppressedCandidateCount > 0
+            ? $", {tracker.SuppressedCandidateCount} suppressed after a manual leave"
+            : string.Empty;
+
+        if (tracker.PendingSwitchRoomCode != null)
+            return $"Considering a switch to {DisplayNameFor(tracker.PendingSwitchRoomCode)} in {tracker.SwitchDwellRemainingSeconds:F1}s.";
+
+        if (tracker.PendingJoinRoomCode != null)
+            return $"Found {DisplayNameFor(tracker.PendingJoinRoomCode)}, joining in {tracker.JoinDwellRemainingSeconds:F1}s.";
+
+        return $"Scanning - no public proximity shows in range ({tracker.TrackedCandidateCount} tracked{suppressed}).";
+    }
+
+
+    /// The DJ's current show-image preview texture, owned by this window (see showImagePreview's own comment
+    /// on why there is exactly one owner), and whatever went wrong last pick.
+    public IDalamudTextureWrap? ShowImagePreview => showImagePreview;
+
+    public string? ShowImageError => showImageError;
+
+    internal static IReadOnlyList<string> HousingDataCenters => DataCenterOptions;
+
+    internal static IReadOnlyList<string> HousingWorldsIn(string dataCenter) =>
+        DataCenters.FirstOrDefault(dc => dc.DataCenter == dataCenter).Worlds ?? Array.Empty<string>();
+
+    internal static IReadOnlyList<string> HousingAreas => HousingAreaOptions;
+
+    internal static IReadOnlyList<string> HousingWards => WardOptions;
+
+    internal static IReadOnlyList<string> HousingPlots => PlotOptions;
+
+    internal static IReadOnlyList<string> HousingApartments => ApartmentOptions;
+
+    internal static string HousingWorldOrEmpty(string dataCenter, string world) =>
+        ResetWorldIfInvalidForDataCenter(dataCenter, world);
+
+    private void DrawVenueAddressSection(string characterName)
+    {
+        EnsureOwnSavedVenuesRequested(characterName);
 
         ImGui.TextDisabled(plugin.Configuration.IsProximityAudio
             ? "Proximity Audio requires an address so nearby listeners can find you:"
@@ -5157,7 +5129,7 @@ public sealed class DjDeckWindow : Window, IDisposable
             ImGui.InputTextWithHint("##djName", placeholder, ref broadcastDjNameBuffer, 32);
             ImGui.SetNextItemWidth(240 * Scale);
             var isPubliclyListed = plugin.Configuration.IsPubliclyListed;
-            ImGui.InputTextWithHint("##broadcastPassword", isPubliclyListed ? "Password (not needed - publicly listed)" : "Password (required)",
+            ImGui.InputTextWithHint("##broadcastPassword", isPubliclyListed ? "Password (not needed - publicly listed)" : "Password (optional)",
                 ref broadcastPasswordBuffer, 32, ImGuiInputTextFlags.Password);
             ImGui.SetNextItemWidth(240 * Scale);
             ImGui.InputTextWithHint("##broadcastHostPassword", "Host password, for co-DJs (required)", ref broadcastHostPasswordBuffer, 32, ImGuiInputTextFlags.Password);
@@ -5171,7 +5143,6 @@ public sealed class DjDeckWindow : Window, IDisposable
                     && !string.IsNullOrWhiteSpace(venueHousingAreaBuffer) && !string.IsNullOrWhiteSpace(venueWardBuffer)
                     && !string.IsNullOrWhiteSpace(venuePlotBuffer));
             var canGoLive = !string.IsNullOrWhiteSpace(broadcastHostPasswordBuffer)
-                && (isPubliclyListed || !string.IsNullOrWhiteSpace(broadcastPasswordBuffer))
                 && proximityAddressComplete;
             if (PanelButton.Draw("##goLive", plugin.Fonts.Icon, FontAwesomeIcon.BroadcastTower, "Go Live", new Vector2(160, 32) * Scale, Theme.NeutralAccent)
                 && canGoLive)
@@ -5214,13 +5185,9 @@ public sealed class DjDeckWindow : Window, IDisposable
 
             if (!canGoLive)
             {
-                string reason;
-                if (string.IsNullOrWhiteSpace(broadcastHostPasswordBuffer))
-                    reason = isPubliclyListed ? "A host password is required before you can go live." : "Both passwords are required before you can go live.";
-                else if (!isPubliclyListed && string.IsNullOrWhiteSpace(broadcastPasswordBuffer))
-                    reason = "Both passwords are required before you can go live.";
-                else
-                    reason = "Proximity Audio requires a full address (Data Center, World, Housing Area, Ward, Plot) before you can go live.";
+                var reason = string.IsNullOrWhiteSpace(broadcastHostPasswordBuffer)
+                    ? "A host password is required before you can go live."
+                    : "Proximity Audio requires a full address (Data Center, World, Housing Area, Ward, Plot) before you can go live.";
                 ImGui.TextColored(Theme.OrangeAccent, reason);
             }
         }
@@ -5845,6 +5812,7 @@ public sealed class DjDeckWindow : Window, IDisposable
         var size = ImGui.GetContentRegionAvail();
         var style = (VisualizerWidget.Style)plugin.Configuration.ListenerVisualizerStyle;
         var overlayAccent = Theme.NeutralAccent;
+        var modern = plugin.Configuration.UseNewDesign;
 
         if (broadcast.IsHostSpotifyModeActive)
         {
@@ -5854,7 +5822,7 @@ public sealed class DjDeckWindow : Window, IDisposable
             if (broadcast.IsListenerReconnecting)
                 DrawReconnectingBanner(originSpotify, size, Scale);
             else
-                DrawMinimizedListenerTrackOverlay(originSpotify, size, broadcast.NowPlayingTitleA, broadcast.NowPlayingPositionSecondsA, broadcast.NowPlayingDurationSecondsA, "", overlayAccent, Scale);
+                DrawMinimizedListenerTrackOverlay(originSpotify, size, broadcast.NowPlayingTitleA, broadcast.NowPlayingPositionSecondsA, broadcast.NowPlayingDurationSecondsA, "", overlayAccent, Scale, modern, topHalf: true);
 
             if (restoreSpotify)
                 isMinimized = false;
@@ -5869,7 +5837,7 @@ public sealed class DjDeckWindow : Window, IDisposable
         if (broadcast.IsListenerReconnecting)
             DrawReconnectingBanner(originA, halfSize, Scale);
         else
-            DrawMinimizedListenerTrackOverlay(originA, halfSize, broadcast.NowPlayingTitleA, broadcast.NowPlayingPositionSecondsA, broadcast.NowPlayingDurationSecondsA, "A", overlayAccent, Scale);
+            DrawMinimizedListenerTrackOverlay(originA, halfSize, broadcast.NowPlayingTitleA, broadcast.NowPlayingPositionSecondsA, broadcast.NowPlayingDurationSecondsA, "A", overlayAccent, Scale, modern, topHalf: true);
 
         var originB = ImGui.GetCursorScreenPos();
         var clickedB = VisualizerWidget.Draw("##listenerMiniB", plugin.AudioHostClient.LatestListenSpectrumB, halfSize, Theme.OrangeAccent, style, plugin.Configuration.ListenerVisualizerSensitivity, MinimizedMirrorCenterOffset);
@@ -5877,7 +5845,7 @@ public sealed class DjDeckWindow : Window, IDisposable
         if (broadcast.IsListenerReconnecting)
             DrawReconnectingBanner(originB, halfSize, Scale);
         else
-            DrawMinimizedListenerTrackOverlay(originB, halfSize, broadcast.NowPlayingTitleB, broadcast.NowPlayingPositionSecondsB, broadcast.NowPlayingDurationSecondsB, "B", overlayAccent, Scale);
+            DrawMinimizedListenerTrackOverlay(originB, halfSize, broadcast.NowPlayingTitleB, broadcast.NowPlayingPositionSecondsB, broadcast.NowPlayingDurationSecondsB, "B", overlayAccent, Scale, modern, topHalf: false);
 
         if (restoreA || restoreB)
             isMinimized = false;
@@ -5938,9 +5906,24 @@ public sealed class DjDeckWindow : Window, IDisposable
     /// Same compact title-strip-plus-slim-bar layout as DrawMiniDeckHalfOverlay (no separate time readout, no
     /// full backdrop under the bar) so the Listener's minimized box looks identical to the DJ's own minimized
     /// dual-deck box - just read-only, since a listener can't seek the host's playback.
-    private static void DrawMinimizedListenerTrackOverlay(Vector2 origin, Vector2 size, string? title, double positionSeconds, double durationSeconds, string label, Vector4 accent, float scale)
+    private static void DrawMinimizedListenerTrackOverlay(Vector2 origin, Vector2 size, string? title, double positionSeconds, double durationSeconds, string label, Vector4 accent, float scale, bool modern, bool topHalf)
     {
         var drawList = ImGui.GetWindowDrawList();
+        var progress = durationSeconds > 0 ? (float)(positionSeconds / durationSeconds) : 0f;
+
+        if (modern)
+        {
+            Controls.V2.MiniTrackOverlay.Draw(drawList, origin, size, title,
+                string.IsNullOrEmpty(label) ? null : label, accent, topHalf);
+
+            if (string.IsNullOrEmpty(title))
+                return;
+
+            var (barPos, barDim) = Controls.V2.MiniTrackOverlay.BarRect(origin, size, ImGui.GetTextLineHeight());
+            Controls.V2.MiniTrackOverlay.DrawStaticBar(drawList, barPos, barDim, progress, accent);
+            return;
+        }
+
         var stripHeight = 20f * scale;
         var padding = new Vector2(6f * scale, 2f * scale);
 
@@ -5953,7 +5936,6 @@ public sealed class DjDeckWindow : Window, IDisposable
 
         var barSize = new Vector2(size.X - (padding.X * 2f), 5f * scale);
         var barOrigin = new Vector2(origin.X + padding.X, origin.Y + stripHeight + (2f * scale));
-        var progress = durationSeconds > 0 ? (float)(positionSeconds / durationSeconds) : 0f;
         DrawMiniProgressBar(barOrigin, barSize, progress, accent);
     }
 
@@ -6068,18 +6050,39 @@ public sealed class DjDeckWindow : Window, IDisposable
         }
 
         var drawList = ImGui.GetWindowDrawList();
-        var stripHeight = 20f * Scale;        drawList.AddRectFilled(origin, origin + new Vector2(size.X, stripHeight), ImGui.GetColorU32(new Vector4(0f, 0f, 0f, 0.55f)));
 
         var isSpotifyHalf = deckId == DeckId.A && spotifyMode.IsActive;
-        var displayText = isSpotifyHalf ? (title ?? "No track loaded") : $"{(deckId == DeckId.A ? "A" : "B")}: {title ?? "No track loaded"}";
+        var deckLabel = isSpotifyHalf ? null : deckId == DeckId.A ? "A" : "B";
         var padding = new Vector2(6f * Scale, 2f * Scale);
-        drawList.AddText(origin + padding, ImGui.GetColorU32(Theme.Text), TruncateToWidth(displayText, size.X - (padding.X * 2f)));
 
-        if (title == null)
-            return;
+        Vector2 barSize;
+        Vector2 barOrigin;
 
-        var barSize = new Vector2(size.X - (padding.X * 2f), 5f * Scale);
-        ImGui.SetCursorScreenPos(new Vector2(origin.X + padding.X, origin.Y + stripHeight + (2f * Scale)));
+        if (plugin.Configuration.UseNewDesign)
+        {
+            var topHalf = deckId == DeckId.A;
+            Controls.V2.MiniTrackOverlay.Draw(drawList, origin, size, title, deckLabel, accent, topHalf);
+
+            if (title == null)
+                return;
+
+            (barOrigin, barSize) = Controls.V2.MiniTrackOverlay.BarRect(origin, size, ImGui.GetTextLineHeight());
+        }
+        else
+        {
+            var stripHeight = 20f * Scale;            drawList.AddRectFilled(origin, origin + new Vector2(size.X, stripHeight), ImGui.GetColorU32(new Vector4(0f, 0f, 0f, 0.55f)));
+
+            var displayText = deckLabel == null ? (title ?? "No track loaded") : $"{deckLabel}: {title ?? "No track loaded"}";
+            drawList.AddText(origin + padding, ImGui.GetColorU32(Theme.Text), TruncateToWidth(displayText, size.X - (padding.X * 2f)));
+
+            if (title == null)
+                return;
+
+            barSize = new Vector2(size.X - (padding.X * 2f), 5f * Scale);
+            barOrigin = new Vector2(origin.X + padding.X, origin.Y + stripHeight + (2f * Scale));
+        }
+
+        ImGui.SetCursorScreenPos(barOrigin);
 
         ref var pendingSeek = ref (deckId == DeckId.A ? ref pendingSeekA : ref pendingSeekB);
         if (pendingSeek.HasValue && Math.Abs(positionSeconds - pendingSeek.Value) < 0.5)
@@ -6207,10 +6210,23 @@ public sealed class DjDeckWindow : Window, IDisposable
     private static readonly Vector4 SpotifyGreen = new(0.118f, 0.843f, 0.376f, 1f);
     private const string DiscordInviteUrl = "https://discord.gg/nJauXrNWx3";
 
+    /// Opens the Discord invite.
+    public static void OpenDiscordInvite()
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo(DiscordInviteUrl) { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            Plugin.Log.Error(ex, "Failed to open Discord invite link");
+        }
+    }
+
     /// The header row: the centered wordmark, plus lock/settings/close always, and two context-dependent
     /// slots - Proximity (Deck/Settings, the host's controls) and Minimize (Deck/Listener, since Settings has
     /// nothing to minimize into).
-    private void DrawHeader()
+    private void DrawHeader(bool pollOnly = false)
     {
         if (reportBugSending)
         {
@@ -6474,6 +6490,9 @@ public sealed class DjDeckWindow : Window, IDisposable
         if (plugin.AudioHostClient.LatestDjProfileDetail?.Profile is { IsOwnProfile: true } ownDetail)
             ownSavedVenuesCache = ownDetail.SavedVenues;
 
+        if (pollOnly)
+            return;
+
         if (currentView == ViewMode.Welcome || currentView == ViewMode.JoinShow || currentView == ViewMode.BrowseShows
             || currentView == ViewMode.DjList || currentView == ViewMode.DjProfile || currentView == ViewMode.DjProfileEdit)
         {
@@ -6540,7 +6559,7 @@ public sealed class DjDeckWindow : Window, IDisposable
                     ImGui.PushStyleColor(ImGuiCol.FrameBgActive, new Vector4(Theme.NeutralAccent.X, Theme.NeutralAccent.Y, Theme.NeutralAccent.Z, 0.25f));
                     ImGui.PushStyleColor(ImGuiCol.Border, new Vector4(Theme.NeutralAccent.X, Theme.NeutralAccent.Y, Theme.NeutralAccent.Z, 0.6f));
                     var changed = ImGui.SliderFloat("##listenVolume", ref volumePercent, 0f, 150f, "%.0f%%");
-                    ImGui.PopStyleColor(3);
+                    ImGui.PopStyleColor(4);
                     ImGui.PopStyleVar(2);
 
                     if (changed)
@@ -6621,65 +6640,7 @@ public sealed class DjDeckWindow : Window, IDisposable
                 ImGui.OpenPopup(ReportBugPopupId);
             }
 
-            if (ImGui.BeginPopup(ReportBugPopupId))
-            {
-                ImGui.SetWindowFontScale(Scale);
-                ImGui.TextColored(Theme.OrangeAccent, "Report a Bug");
-                ImGui.TextDisabled("Sends your AudioHost session log, plugin version, and current");
-                ImGui.TextDisabled("status straight to the developer - nothing else on this PC.");
-                ImGui.Spacing();
-
-                ImGui.TextDisabled("What happened? (optional)");
-
-                ImGui.PushStyleVar(ImGuiStyleVar.FrameBorderSize, 1f);
-                ImGui.PushStyleColor(ImGuiCol.FrameBg, Theme.Background);
-                ImGui.PushStyleColor(ImGuiCol.FrameBgHovered, new Vector4(0.16f, 0.16f, 0.2f, 1f));
-                ImGui.PushStyleColor(ImGuiCol.FrameBgActive, new Vector4(Theme.NeutralAccent.X, Theme.NeutralAccent.Y, Theme.NeutralAccent.Z, 0.25f));
-                ImGui.PushStyleColor(ImGuiCol.Border, new Vector4(Theme.NeutralAccent.X, Theme.NeutralAccent.Y, Theme.NeutralAccent.Z, 0.6f));
-
-                ImGui.SetNextItemWidth(280f * Scale);
-                WrappedInput.Multiline("##reportBugDescription", ref reportBugDescriptionBuffer, 1000, new Vector2(280f, 80f) * Scale);
-
-                ImGui.Spacing();
-                ImGui.TextDisabled("Your Discord name, if you'd like a reply (optional)");
-                ImGui.SetNextItemWidth(280f * Scale);
-                ImGui.InputTextWithHint("##reportBugDiscordName", "e.g. username#0000", ref reportBugDiscordNameBuffer, 64);
-
-                ImGui.PopStyleColor(4);
-                ImGui.PopStyleVar();
-                ImGui.Spacing();
-
-                if (reportBugSending)
-                {
-                    ImGui.TextDisabled("Sending...");
-                }
-                else if (PanelButton.Draw("##reportBugSend", null, null, "Send Report", new Vector2(160, 28) * Scale, Theme.OrangeAccent))
-                {
-                    reportBugSending = true;
-                    reportBugSendResult = null;
-                    plugin.Configuration.LastReportBugDiscordName = reportBugDiscordNameBuffer.Trim();
-                    plugin.Configuration.Save();
-                    plugin.AudioHostClient.Send(MessageType.SubmitBugReport, new SubmitBugReportCommand
-                    {
-                        Description = WrappedInput.Unfold(reportBugDescriptionBuffer, WrappedInput.WidthFor(new Vector2(280f, 80f) * Scale)).Trim(),
-                        DiscordName = string.IsNullOrWhiteSpace(reportBugDiscordNameBuffer) ? null : reportBugDiscordNameBuffer.Trim(),
-                        PluginVersion = ChangelogData.LatestVersion,
-                        CharacterName = Plugin.ObjectTable.LocalPlayer?.Name.TextValue ?? string.Empty,
-                        SystemInfo = SystemDiagnostics.Capture(plugin.Configuration.UiScale),
-                    });
-                }
-
-                if (reportBugSendResult != null)
-                {
-                    ImGui.Spacing();
-                    if (reportBugSendResult.Success)
-                        ImGui.TextColored(Theme.CyanAccent, "Sent - thank you!");
-                    else
-                        ImGui.TextColored(Theme.OrangeAccent, $"Couldn't send: {reportBugSendResult.Error ?? "unknown error"}");
-                }
-
-                ImGui.EndPopup();
-            }
+            DrawReportBugPopup();
         }
 
         if (showSpotify)
@@ -7352,6 +7313,9 @@ public sealed class DjDeckWindow : Window, IDisposable
             ImGui.EndPopup();
         }
     }
+
+    /// The sound-pad file picker, for the 2.0 Mix screen.
+    public void OpenSoundPadUpload(int index) => OpenSoundPadUploadDialog(index);
 
     private void OpenSoundPadUploadDialog(int index)
     {

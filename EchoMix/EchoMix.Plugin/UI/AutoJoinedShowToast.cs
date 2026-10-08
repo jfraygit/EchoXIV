@@ -1,6 +1,3 @@
-using System.Numerics;
-using Dalamud.Bindings.ImGui;
-
 namespace EchoMix.Plugin.UI;
 
 /// A brief "auto-joined a nearby show" toast for the listener - fires once AutoJoinTracker's own
@@ -10,7 +7,11 @@ public sealed class AutoJoinedShowToast : ToastWindow
 {
     private string djName = string.Empty;
 
-    protected override Vector2 ToastSize => new(260f, 76f);
+    protected override ToastContent Content => new(
+        "Auto-Joined (Beta)",
+        Theme.CyanAccent,
+        Subject: djName,
+        Body: "Joined Show");
 
     public AutoJoinedShowToast(Plugin plugin) : base(plugin, "###echomix-autojoinedtoast")
     {
@@ -20,17 +21,5 @@ public sealed class AutoJoinedShowToast : ToastWindow
     {
         this.djName = djName;
         ShowToast();
-    }
-
-    public override void Draw()
-    {
-        ImGui.SetWindowFontScale(Scale);
-        var colorCount = Theme.Push();
-
-        ImGui.TextColored(Theme.CyanAccent, "Auto-Joined (Beta)");
-        ImGui.TextColored(Theme.Text, UiHelpers.TruncateToWidth(djName, ImGui.GetContentRegionAvail().X));
-        ImGui.TextDisabled("Joined Show");
-
-        Theme.Pop(colorCount);
     }
 }

@@ -35,6 +35,18 @@ public sealed class DeckQueueManager
             queue.RemoveAt(index);
     }
 
+    /// Moves a queued track one place earlier or later.
+    public void Move(DeckId id, int index, bool up)
+    {
+        var queue = QueueFor(id);
+        var target = up ? index - 1 : index + 1;
+
+        if (index < 0 || index >= queue.Count || target < 0 || target >= queue.Count)
+            return;
+
+        (queue[index], queue[target]) = (queue[target], queue[index]);
+    }
+
     /// Called every status-tick for both decks.
     public bool Pump(DeckEngine deck, DeckId id)
     {

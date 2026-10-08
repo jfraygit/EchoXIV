@@ -44,6 +44,10 @@ public sealed class ProcessLoopbackCapture : ExternalInput.IExternalAudioSource
     private int packetsDiscardedInWindow;
     private int packetsProcessedInWindow;
 
+    private static readonly TimeSpan ExitCheckInterval = TimeSpan.FromMilliseconds(500);
+    private Process? targetProcess;
+    private DateTime lastExitCheckUtc = DateTime.MinValue;
+
     /// False once the capture loop has stopped for any reason other than Dispose being called - most commonly
     /// the target process (Spotify) exiting mid-capture.
     public bool IsRunning => running;
@@ -208,6 +212,12 @@ public sealed class ProcessLoopbackCapture : ExternalInput.IExternalAudioSource
                 captureClient!.GetNextPacketSize(out var framesAvailable);
                 if (framesAvailable == 0)
                 {
+                    if (TargetHasExited())
+                    {
+                        running = false;
+                        break;
+                    }
+
                     Thread.Sleep(5);
                     continue;
                 }
@@ -236,6 +246,29 @@ public sealed class ProcessLoopbackCapture : ExternalInput.IExternalAudioSource
             {
                 running = false;
             }
+        }
+    }
+
+    /// Whether the captured application has exited, throttled to ExitCheckInterval.
+    private bool TargetHasExited()
+    {
+        if (DateTime.UtcNow - lastExitCheckUtc < ExitCheckInterval)
+            return false;
+
+        lastExitCheckUtc = DateTime.UtcNow;
+
+        try
+        {
+            targetProcess ??= Process.GetProcessById(targetProcessId);
+            return targetProcess.HasExited;
+        }
+        catch (ArgumentException)
+        {
+            return true;
+        }
+        catch
+        {
+            return false;
         }
     }
 
@@ -292,6 +325,9 @@ public sealed class ProcessLoopbackCapture : ExternalInput.IExternalAudioSource
 
         if (formatPtr != IntPtr.Zero)
             Marshal.FreeHGlobal(formatPtr);
+
+        targetProcess?.Dispose();
+        targetProcess = null;
     }
 
 

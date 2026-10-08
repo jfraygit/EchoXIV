@@ -25,6 +25,10 @@ public sealed class AudioHostClient : IDisposable
 
     private static readonly TimeSpan StaleTimeout = TimeSpan.FromSeconds(5);
 
+    /// The same signal as StaleTimeout, read far sooner because acting on it costs nothing but a changed
+    /// label - see Health.
+    private static readonly TimeSpan UnresponsiveTimeout = TimeSpan.FromSeconds(1);
+
     private MixerStatusMessage latestStatus = new();
     private float[] latestSpectrumA = Array.Empty<float>();
     private float[] latestSpectrumB = Array.Empty<float>();
@@ -35,12 +39,15 @@ public sealed class AudioHostClient : IDisposable
     private List<SoundPadDto> latestSoundPads = new();
     private DeckQueuesSnapshotMessage latestDeckQueues = new();
     private List<AudioInputDeviceDto> latestAudioInputDevices = new();
+    private List<AudioOutputDeviceDto> latestAudioOutputDevices = new();
+    private bool latestOutputRoutingAvailable = true;
     private List<CapturableProcessDto> latestCapturableProcesses = new();
     private List<PendingSongRequestDto> latestPendingSongRequests = new();
     private BugReportResultMessage? latestBugReportResult;
     private PublicShowsSnapshotMessage? latestPublicShows;
     private ReportShowResultMessage? latestReportShowResult;
     private DjProfilesSnapshotMessage? latestDjProfiles;
+    private DjStatsSnapshotMessage? latestDjStats;
     private DjProfileDetailSnapshotMessage? latestDjProfileDetail;
     private DjProfileSaveResultMessage? latestDjProfileSaveResult;
     private DjProfileDeleteResultMessage? latestDjProfileDeleteResult;
@@ -56,6 +63,13 @@ public sealed class AudioHostClient : IDisposable
     public bool IsConnected => pipe?.IsConnected ?? false;
 
     public bool IsStale => IsConnected && DateTime.UtcNow - lastMessageUtc > StaleTimeout;
+
+    /// One answer to "is the engine actually there", for anything that reports it to the user.
+    public AudioHostHealth Health => !IsConnected
+        ? AudioHostHealth.Disconnected
+        : DateTime.UtcNow - lastMessageUtc > UnresponsiveTimeout
+            ? AudioHostHealth.NotResponding
+            : AudioHostHealth.Connected;
 
     /// The process AudioHostLauncher most recently launched and successfully connected to, if any - null if
     /// the current connection was inherited (already running before this launch attempt, e.g. across a plugin
@@ -81,6 +95,13 @@ public sealed class AudioHostClient : IDisposable
     public DeckQueuesSnapshotMessage LatestDeckQueues { get { lock (cacheGate) return latestDeckQueues; } }
 
     public IReadOnlyList<AudioInputDeviceDto> LatestAudioInputDevices { get { lock (cacheGate) return latestAudioInputDevices; } }
+
+    /// Windows output devices, for choosing where Spotify's own audio should play while Spotify Mode
+    /// broadcasts it - see AudioHost's SpotifyOutputRouting.
+    public IReadOnlyList<AudioOutputDeviceDto> LatestAudioOutputDevices { get { lock (cacheGate) return latestAudioOutputDevices; } }
+
+    /// Whether this Windows build exposes per-app routing at all.
+    public bool IsOutputRoutingAvailable { get { lock (cacheGate) return latestOutputRoutingAvailable; } }
 
     public IReadOnlyList<CapturableProcessDto> LatestCapturableProcesses { get { lock (cacheGate) return latestCapturableProcesses; } }
 
@@ -118,7 +139,35 @@ public sealed class AudioHostClient : IDisposable
 
     /// Null until the first RequestDjProfiles round trip lands - same "haven't asked yet" vs "asked, zero
     /// profiles exist" distinction LatestPublicShows already draws.
-    public DjProfilesSnapshotMessage? LatestDjProfiles { get { lock (cacheGate) return latestDjProfiles; } }
+    public DjProfilesSnapshotMessage? LatestDjProfiles
+    {
+        get
+        {
+#if DEBUG
+
+            if (SampleProfilesOverride is { } sample)
+                return sample;
+#endif
+            lock (cacheGate)
+                return latestDjProfiles;
+        }
+    }
+
+#if DEBUG
+    /// Debug-only stand-in for the profile snapshot, set from Plugin.OnFrameworkUpdate while the Sample
+    /// Browse Data toggle is on.
+    public static DjProfilesSnapshotMessage? SampleProfilesOverride { get; set; }
+#endif
+
+    /// Null until the first RequestDjStats round trip lands.
+    public DjStatsSnapshotMessage? LatestDjStats
+    {
+        get
+        {
+            lock (cacheGate)
+                return latestDjStats;
+        }
+    }
 
     /// Null until a GetDjProfileDetail round trip lands for whichever profile was last clicked - the DJ
     /// List's profile-view screen reads this, not a per-profile cache, since only one profile is ever open at
@@ -343,6 +392,17 @@ public sealed class AudioHostClient : IDisposable
                     latestAudioInputDevices = envelope.ReadPayload<AudioInputDevicesSnapshotMessage>().Devices;
                 break;
 
+            case MessageType.AudioOutputDevicesSnapshot:
+                {
+                    var snapshot = envelope.ReadPayload<AudioOutputDevicesSnapshotMessage>();
+                    lock (cacheGate)
+                    {
+                        latestAudioOutputDevices = snapshot.Devices;
+                        latestOutputRoutingAvailable = snapshot.RoutingAvailable;
+                    }
+                }
+                break;
+
             case MessageType.CapturableProcessesSnapshot:
                 lock (cacheGate)
                     latestCapturableProcesses = envelope.ReadPayload<CapturableProcessesSnapshotMessage>().Processes;
@@ -371,6 +431,11 @@ public sealed class AudioHostClient : IDisposable
             case MessageType.DjProfilesSnapshot:
                 lock (cacheGate)
                     latestDjProfiles = envelope.ReadPayload<DjProfilesSnapshotMessage>();
+                break;
+
+            case MessageType.DjStatsSnapshot:
+                lock (cacheGate)
+                    latestDjStats = envelope.ReadPayload<DjStatsSnapshotMessage>();
                 break;
 
             case MessageType.DjProfileDetailSnapshot:
@@ -452,12 +517,33 @@ public sealed class AudioHostClient : IDisposable
     {
         lock (writeGate)
         {
-            readCts?.Cancel();
-            writer?.Dispose();
-            pipe?.Dispose();
+            TryDispose(readCts, cancelFirst: true);
+            TryDispose(writer);
+            TryDispose(pipe);
+
             writer = null;
             pipe = null;
             readCts = null;
+        }
+    }
+
+    private static void TryDispose(IDisposable? resource, bool cancelFirst = false)
+    {
+        try
+        {
+            if (cancelFirst && resource is CancellationTokenSource cts)
+                cts.Cancel();
+        }
+        catch (Exception)
+        {
+        }
+
+        try
+        {
+            resource?.Dispose();
+        }
+        catch (Exception)
+        {
         }
     }
 

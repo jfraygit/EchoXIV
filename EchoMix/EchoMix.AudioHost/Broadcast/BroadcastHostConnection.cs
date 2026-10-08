@@ -237,6 +237,8 @@ public sealed class BroadcastHostConnection : IAsyncDisposable
                 VenueSubdivision = savedVenueSubdivision,
                 WebListenEnabled = savedWebListenEnabled,
                 WebListenToken = savedWebListenToken,
+                BuildAttestationVersion = BuildAttestationFile.Version,
+                BuildAttestationSignature = BuildAttestationFile.Signature,
             });
 
             var frame = await FrameIO.ReadFrameAsync(ssl, connectTimeout.Token);
@@ -363,6 +365,13 @@ public sealed class BroadcastHostConnection : IAsyncDisposable
     public Task SetShowNameAsync(string? showName) =>
         IsLive
             ? SendControlAsync(RelayMessageType.UpdateShowName, new UpdateShowNameMessage { ShowName = showName })
+            : Task.CompletedTask;
+
+    /// Adds or removes the show from the browse grid without a stop/restart.
+    public Task SetPublicListingAsync(bool isPubliclyListed) =>
+        IsLive
+            ? SendControlAsync(RelayMessageType.UpdatePublicListing,
+                new UpdatePublicListingMessage { IsPubliclyListed = isPubliclyListed })
             : Task.CompletedTask;
 
     /// Toggles the public Web Listen Link - fire-and-forget like SetShowNameAsync above (no direct return

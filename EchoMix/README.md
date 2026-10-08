@@ -8,7 +8,7 @@ from inside the game or from a plain web browser.
 
 Add `https://echoxiv.com/pluginmaster.json` to Dalamud's custom plugin repositories.
 
-Open it with `/echomix`, or `/el`/`/emix` to jump straight to the Listener or DJ Deck view.
+Open it with `/echomix`, or `/el`/`/emix` to jump straight to Listen or the Mixer.
 
 ## What It Does
 

@@ -11,8 +11,8 @@ public sealed class DeckStatus
     public double PositionSeconds { get; set; }
     public double DurationSeconds { get; set; }
     public double CuePointSeconds { get; set; }
-    public float Gain { get; set; }
-    public float Trim { get; set; }
+    public float Gain { get; set; } = 1f;
+    public float Trim { get; set; } = 1f;
     public float LowGainDb { get; set; }
     public float MidGainDb { get; set; }
     public float HighGainDb { get; set; }
@@ -50,7 +50,8 @@ public sealed class MixerStatusMessage
     /// See SetAutoDjCommand/MixerEngine.Tick - mirrored back here so the UI reflects ground truth (e.g.
     public bool AutoDjEnabled { get; set; }
     public float AutoDjFadeSeconds { get; set; } = 6f;
-    public float MasterVolume { get; set; }
+    /// Unity, for the same reason DeckStatus.Gain is - MixerEngine builds its master stage at 1f.
+    public float MasterVolume { get; set; } = 1f;
     public bool IsOutputMuted { get; set; }
     public float OutputPeak { get; set; }
     public BroadcastStatusMessage Broadcast { get; set; } = new();
@@ -75,6 +76,13 @@ public sealed class SpotifyModeStatusMessage
     public double NowPlayingPositionSeconds { get; set; }
     public double NowPlayingDurationSeconds { get; set; }
     public bool NowPlayingIsPlaying { get; set; }
+
+    /// Whether this Windows build exposes the per-app audio routing interface at all.
+    public bool RoutingAvailable { get; set; }
+
+    /// The output device Spotify is currently pinned to, or null when it follows the system default.
+    public string? OutputDeviceId { get; set; }
+    public string? OutputDeviceName { get; set; }
 }
 
 /// Whether the broadcast is currently replaced by audio captured from a DJ-selected Windows recording device
@@ -101,6 +109,24 @@ public sealed class AudioInputDeviceDto
 public sealed class AudioInputDevicesSnapshotMessage
 {
     public List<AudioInputDeviceDto> Devices { get; set; } = new();
+}
+
+/// One Windows audio OUTPUT device, for picking where Spotify's own audio should go.
+public sealed class AudioOutputDeviceDto
+{
+    /// The raw MMDevice id.
+    public string Id { get; set; } = string.Empty;
+    public string FriendlyName { get; set; } = string.Empty;
+    public bool IsDefault { get; set; }
+}
+
+public sealed class AudioOutputDevicesSnapshotMessage
+{
+    public List<AudioOutputDeviceDto> Devices { get; set; } = new();
+
+    /// False when this Windows build doesn't expose per-app routing, in which case the device list is
+    /// informational only and the UI should say so rather than offering a picker that can't work.
+    public bool RoutingAvailable { get; set; }
 }
 
 public sealed class CapturableProcessDto

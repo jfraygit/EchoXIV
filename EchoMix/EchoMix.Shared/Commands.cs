@@ -33,6 +33,7 @@ public static class MessageType
 
     public const string AssignTrackToDeck = nameof(AssignTrackToDeck);
     public const string RemoveFromDeckQueue = nameof(RemoveFromDeckQueue);
+    public const string MoveInDeckQueue = nameof(MoveInDeckQueue);
     public const string SetTrackGain = nameof(SetTrackGain);
     public const string DeckQueuesSnapshot = nameof(DeckQueuesSnapshot);
     public const string UnloadDeck = nameof(UnloadDeck);
@@ -83,6 +84,10 @@ public static class MessageType
     public const string SpotifySkipPrevious = nameof(SpotifySkipPrevious);
     public const string SpotifyTogglePlayPause = nameof(SpotifyTogglePlayPause);
 
+    public const string RequestAudioOutputDevices = nameof(RequestAudioOutputDevices);
+    public const string AudioOutputDevicesSnapshot = nameof(AudioOutputDevicesSnapshot);
+    public const string SetSpotifyOutputDevice = nameof(SetSpotifyOutputDevice);
+
     public const string RequestAudioInputDevices = nameof(RequestAudioInputDevices);
     public const string AudioInputDevicesSnapshot = nameof(AudioInputDevicesSnapshot);
     public const string StartExternalInputMode = nameof(StartExternalInputMode);
@@ -125,6 +130,9 @@ public static class MessageType
     public const string ProfileLinkCodeResult = nameof(ProfileLinkCodeResult);
     public const string RedeemProfileLinkCode = nameof(RedeemProfileLinkCode);
     public const string ProfileLinkRedeemResult = nameof(ProfileLinkRedeemResult);
+
+    public const string RequestDjStats = nameof(RequestDjStats);
+    public const string DjStatsSnapshot = nameof(DjStatsSnapshot);
     public const string UnlinkProfileCharacter = nameof(UnlinkProfileCharacter);
     public const string ProfileUnlinkResult = nameof(ProfileUnlinkResult);
 
@@ -137,7 +145,16 @@ public static class MessageType
 
     public const string SetShowName = nameof(SetShowName);
 
+    public const string SetPublicListing = nameof(SetPublicListing);
+
     public const string SetWebListenLink = nameof(SetWebListenLink);
+}
+
+/// Pins Spotify's audio to one output device, or releases it back to following the system default when
+/// DeviceId is null or empty.
+public sealed class SetSpotifyOutputDeviceCommand
+{
+    public string? DeviceId { get; set; }
 }
 
 public sealed class StartExternalInputModeCommand
@@ -207,6 +224,11 @@ public sealed class SetShowImageCommand
 }
 
 /// See MessageType.SetShowName's own doc comment.
+public sealed class SetPublicListingCommand
+{
+    public bool IsPubliclyListed { get; set; }
+}
+
 public sealed class SetShowNameCommand
 {
     public string? ShowName { get; set; }
@@ -425,6 +447,16 @@ public sealed class AssignTrackToDeckCommand
     public double DurationSeconds { get; set; }
     public float? Bpm { get; set; }
     public float? BeatGridOffsetSeconds { get; set; }
+}
+
+/// Moves one queued track a single place up or down the running order.
+public sealed class MoveInDeckQueueCommand
+{
+    public DeckId Deck { get; set; }
+    public int Index { get; set; }
+
+    /// True moves the track one place EARLIER (toward playing next).
+    public bool Up { get; set; }
 }
 
 public sealed class RemoveFromDeckQueueCommand

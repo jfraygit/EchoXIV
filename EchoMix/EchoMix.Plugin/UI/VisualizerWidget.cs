@@ -174,7 +174,7 @@ public static class VisualizerWidget
             var top = new Vector2(x, origin.Y + size.Y - barHeight);
             var bottom = new Vector2(x + barWidth, origin.Y + size.Y);
 
-            var color = Vector4.Lerp(accentColor, Theme.Accent, i / (float)bands);
+            var color = Vector4.Lerp(accentColor, Complement(accentColor), i / (float)bands);
             drawList.AddRectFilled(top, bottom, ImGui.GetColorU32(color), barRounding);
 
             var capTop = top;
@@ -250,7 +250,7 @@ public static class VisualizerWidget
             var top = new Vector2(x, centerY - halfHeight);
             var bottom = new Vector2(x + barWidth, centerY + halfHeight);
 
-            var color = Vector4.Lerp(accentColor, Theme.Accent, i / (float)bands);
+            var color = Vector4.Lerp(accentColor, Complement(accentColor), i / (float)bands);
             drawList.AddRectFilled(top, bottom, ImGui.GetColorU32(color), barRounding);
         }
     }
@@ -324,7 +324,7 @@ public static class VisualizerWidget
                 var cellTop = cellBottom - cellHeight;
                 var lit = c < litCells;
                 var color = lit
-                    ? Vector4.Lerp(accentColor, Theme.Accent, c / (float)cellCount)
+                    ? Vector4.Lerp(accentColor, Complement(accentColor), c / (float)cellCount)
                     : new Vector4(accentColor.X, accentColor.Y, accentColor.Z, 0.08f);
                 drawList.AddRectFilled(new Vector2(x, cellTop), new Vector2(x + barWidth, cellBottom), ImGui.GetColorU32(color), barRounding);
             }
@@ -367,7 +367,7 @@ public static class VisualizerWidget
         {
             var angle = (i / (float)bands) * MathF.PI * 2f;
             var dir = new Vector2(MathF.Cos(angle), MathF.Sin(angle));
-            var color = Vector4.Lerp(accentColor, Theme.Accent, i / (float)bands);
+            var color = Vector4.Lerp(accentColor, Complement(accentColor), i / (float)bands);
             var outer = center + (dir * (baseRadius + (smoothed[i] * maxExtra)));
             drawList.AddLine(center + (dir * baseRadius), outer, ImGui.GetColorU32(color), 2.5f);
             drawList.AddCircleFilled(outer, 2f, ImGui.GetColorU32(Vector4.Lerp(color, Vector4.One, 0.5f)));
@@ -387,7 +387,7 @@ public static class VisualizerWidget
             var t = (i + 1) / (float)bands;
             var alpha = 0.15f + (smoothed[i] * 0.6f);
             var thickness = 1.5f + (smoothed[i] * 4f);
-            var color = Vector4.Lerp(accentColor, Theme.Accent, t);
+            var color = Vector4.Lerp(accentColor, Complement(accentColor), t);
             drawList.AddCircle(center, t * maxRadius, ImGui.GetColorU32(new Vector4(color.X, color.Y, color.Z, alpha)), 0, thickness);
         }
     }
@@ -450,7 +450,7 @@ public static class VisualizerWidget
             var top = new Vector2(x, origin.Y + size.Y - barHeight);
             var bottom = new Vector2(x + barWidth, origin.Y + size.Y);
 
-            var color = Vector4.Lerp(accentColor, Theme.Accent, i / (float)bands);
+            var color = Vector4.Lerp(accentColor, Complement(accentColor), i / (float)bands);
             drawList.AddRectFilled(top, bottom, ImGui.GetColorU32(color), barRounding);
 
             var peakY = origin.Y + size.Y - (peaks[i] * size.Y);
@@ -489,7 +489,7 @@ public static class VisualizerWidget
                     continue;
 
                 var x = origin.X + (col * colWidth);
-                var color = Vector4.Lerp(accentColor, Theme.Accent, col / (float)bands);
+                var color = Vector4.Lerp(accentColor, Complement(accentColor), col / (float)bands);
                 drawList.AddRectFilled(new Vector2(x, y), new Vector2(x + colWidth, y + rowHeight),
                     ImGui.GetColorU32(new Vector4(color.X, color.Y, color.Z, amplitude * (1f - age))));
             }
@@ -513,7 +513,7 @@ public static class VisualizerWidget
                 continue;
 
             var x = origin.X + ((i + 0.5f) / bands * size.X);
-            var color = Vector4.Lerp(accentColor, Theme.Accent, i / (float)bands);
+            var color = Vector4.Lerp(accentColor, Complement(accentColor), i / (float)bands);
             embers.Add(new Ember { X = x, Y = origin.Y + size.Y, Life = 1f, Size = 2f + (smoothed[i] * 3f), Color = color });
         }
 
@@ -536,19 +536,27 @@ public static class VisualizerWidget
     }
 
     /// Amplitude drawn as color instead of size - every cell is the same fixed height, only its hue and
-    /// brightness move, cool blue when quiet through to hot white when loud.
+    /// brightness move, cool when quiet through to hot white when loud.
     private static void DrawHeatStrip(ImDrawListPtr drawList, Vector2 origin, Vector2 size, float[] smoothed, Vector4 accentColor)
     {
         var bands = smoothed.Length;
         var cellWidth = size.X / bands;
+        var hot = Complement(accentColor);
 
         for (var i = 0; i < bands; i++)
         {
             var x = origin.X + (i * cellWidth);
-            var hue = MathF.Max(0f, 0.62f - (smoothed[i] * 0.62f));            var value = 0.35f + (smoothed[i] * 0.65f);
-            var rgb = HsvToRgb(hue, 0.85f, value);
+            var level = Math.Clamp(smoothed[i], 0f, 1f);
+
+            var color = Vector4.Lerp(accentColor, hot, MathF.Min(1f, level * 1.35f));
+
+            if (level > 0.72f)
+                color = Vector4.Lerp(color, Vector4.One, (level - 0.72f) / 0.28f * 0.65f);
+
+            var dim = 0.3f + (level * 0.7f);
+
             drawList.AddRectFilled(new Vector2(x, origin.Y), new Vector2(x + cellWidth - 1f, origin.Y + size.Y),
-                ImGui.GetColorU32(new Vector4(rgb.X, rgb.Y, rgb.Z, 1f)), 2f);
+                ImGui.GetColorU32(new Vector4(color.X * dim, color.Y * dim, color.Z * dim, 1f)), 2f);
         }
     }
 
@@ -568,7 +576,7 @@ public static class VisualizerWidget
             var angle = rotation + ((i / (float)bands) * MathF.PI * 2f);
             var pos = center + (new Vector2(MathF.Cos(angle), MathF.Sin(angle)) * radius);
             var dotRadius = 2f + (smoothed[i] * 8f);
-            var color = Vector4.Lerp(accentColor, Theme.Accent, i / (float)bands);
+            var color = Vector4.Lerp(accentColor, Complement(accentColor), i / (float)bands);
             drawList.AddCircleFilled(pos, dotRadius * 1.6f, ImGui.GetColorU32(new Vector4(color.X, color.Y, color.Z, 0.25f)));
             drawList.AddCircleFilled(pos, dotRadius, ImGui.GetColorU32(color));
         }
@@ -610,7 +618,7 @@ public static class VisualizerWidget
             var x0 = origin.X + (i / (float)bands * size.X);
             var x1 = origin.X + ((i + 1) / (float)bands * size.X);
             var thickness = 1.5f + (smoothed[i] * maxThickness);
-            var color = Vector4.Lerp(accentColor, Theme.Accent, i / (float)bands);
+            var color = Vector4.Lerp(accentColor, Complement(accentColor), i / (float)bands);
             drawList.AddLine(new Vector2(x0, centerY), new Vector2(x1, centerY), ImGui.GetColorU32(color), thickness);
         }
     }
@@ -630,7 +638,7 @@ public static class VisualizerWidget
             var y = origin.Y + topMargin + ((float)seed.NextDouble() * usableHeight);
             var twinkle = 0.15f + (smoothed[i] * 0.85f);
             var radius = 1.5f + (smoothed[i] * 2.5f);
-            var color = Vector4.Lerp(accentColor, Theme.Accent, i / (float)bands);
+            var color = Vector4.Lerp(accentColor, Complement(accentColor), i / (float)bands);
             drawList.AddCircleFilled(new Vector2(x, y), radius, ImGui.GetColorU32(new Vector4(color.X, color.Y, color.Z, twinkle)));
         }
     }
@@ -661,7 +669,7 @@ public static class VisualizerWidget
             var headY = origin.Y + topMargin + (positions[i] * usableHeight);
             var tailY = MathF.Max(origin.Y + topMargin, headY - trailLength);
             var x = origin.X + ((i + 0.5f) * colWidth);
-            var color = Vector4.Lerp(accentColor, Theme.Accent, i / (float)bands);
+            var color = Vector4.Lerp(accentColor, Complement(accentColor), i / (float)bands);
 
             drawList.AddLine(new Vector2(x, tailY), new Vector2(x, headY),
                 ImGui.GetColorU32(new Vector4(color.X, color.Y, color.Z, 0.25f + (smoothed[i] * 0.4f))), 2f);
@@ -687,7 +695,7 @@ public static class VisualizerWidget
         {
             var baseAngle = (i / (float)bands) * wedge;
             var length = baseRadius + (smoothed[i] * maxExtra);
-            var color = Vector4.Lerp(accentColor, Theme.Accent, i / (float)bands);
+            var color = Vector4.Lerp(accentColor, Complement(accentColor), i / (float)bands);
 
             for (var s = 0; s < symmetryCount; s++)
             {
@@ -785,7 +793,7 @@ public static class VisualizerWidget
         {
             var x = origin.X + (i * (barWidth + gap));
             var height = Math.Max(2f, smoothed[i] * size.Y);
-            var color = Vector4.Lerp(accentColor, Theme.Accent, i / (float)bands);
+            var color = Vector4.Lerp(accentColor, Complement(accentColor), i / (float)bands);
 
             var bottomLeft = new Vector2(x, baseline);
             var bottomRight = new Vector2(x + barWidth, baseline);
@@ -810,7 +818,7 @@ public static class VisualizerWidget
             var x = origin.X + ((i + 0.5f) / bands * size.X);
             var radius = smoothed[i] * maxRadius;
             var alpha = ((1f - smoothed[i]) * 0.6f) + 0.1f;
-            var color = Vector4.Lerp(accentColor, Theme.Accent, i / (float)bands);
+            var color = Vector4.Lerp(accentColor, Complement(accentColor), i / (float)bands);
             drawList.AddCircle(new Vector2(x, baseline), radius, ImGui.GetColorU32(new Vector4(color.X, color.Y, color.Z, alpha)), 0, 1.5f);
             drawList.AddCircleFilled(new Vector2(x, baseline), 2.5f, ImGui.GetColorU32(color));
         }
@@ -846,7 +854,7 @@ public static class VisualizerWidget
 
             var x = origin.X + ((i + 0.5f) / bands * size.X);
             var y = origin.Y + Math.Clamp(state.Y[i], 0f, size.Y);
-            var color = Vector4.Lerp(accentColor, Theme.Accent, i / (float)bands);
+            var color = Vector4.Lerp(accentColor, Complement(accentColor), i / (float)bands);
             drawList.AddCircleFilled(new Vector2(x, y), 4f, ImGui.GetColorU32(color));
         }
     }
@@ -878,7 +886,7 @@ public static class VisualizerWidget
                 points[i] = new Vector2(x, y);
             }
 
-            var layerColor = Vector4.Lerp(accentColor, Theme.Accent, MathF.Min(1f, (layer / (float)layers) + 0.12f));
+            var layerColor = Vector4.Lerp(accentColor, Complement(accentColor), MathF.Min(1f, (layer / (float)layers) + 0.12f));
             var fillColor = ImGui.GetColorU32(new Vector4(layerColor.X, layerColor.Y, layerColor.Z, 0.28f - (layer * 0.06f)));
             for (var i = 0; i < bands - 1; i++)
             {
@@ -895,21 +903,16 @@ public static class VisualizerWidget
         }
     }
 
-    private static Vector3 HsvToRgb(float h, float s, float v)
+    /// The far end of a two-colour sweep, given the accent a style was handed.
+    private static Vector4 Complement(Vector4 accent)
     {
-        var i = (int)(h * 6f);
-        var f = (h * 6f) - i;
-        var p = v * (1f - s);
-        var q = v * (1f - (f * s));
-        var t = v * (1f - ((1f - f) * s));
-        return (((i % 6) + 6) % 6) switch
-        {
-            0 => new Vector3(v, t, p),
-            1 => new Vector3(q, v, p),
-            2 => new Vector3(p, v, t),
-            3 => new Vector3(p, q, v),
-            4 => new Vector3(t, p, v),
-            _ => new Vector3(v, p, q),
-        };
+        var a = Theme.CyanAccent;
+        var b = Theme.OrangeAccent;
+
+        var toA = MathF.Abs(accent.X - a.X) + MathF.Abs(accent.Y - a.Y) + MathF.Abs(accent.Z - a.Z);
+        var toB = MathF.Abs(accent.X - b.X) + MathF.Abs(accent.Y - b.Y) + MathF.Abs(accent.Z - b.Z);
+
+        return toA <= toB ? b : a;
     }
+
 }

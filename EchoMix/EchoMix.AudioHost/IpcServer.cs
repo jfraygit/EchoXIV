@@ -40,6 +40,13 @@ public sealed class IpcServer
     private volatile bool soundPadsDirty = true;
     private volatile bool queuesDirty = true;
     private volatile bool audioInputDevicesDirty = true;
+
+    /// Deliberately NOT dirty at startup, unlike the input-device list above.
+    private volatile bool audioOutputDevicesDirty;
+
+    /// The DJ's chosen output device for Spotify, remembered so it can be re-applied when Spotify Mode
+    /// starts.
+    private string? spotifyOutputDeviceId;
     private volatile bool capturableProcessesDirty = true;
     private volatile bool pendingSongRequestsDirty = true;
     private volatile bool bugReportResultDirty;
@@ -57,6 +64,8 @@ public sealed class IpcServer
 
     private volatile bool djProfilesResultDirty;
     private DjProfilesSnapshotMessage? djProfilesSnapshot;
+    private volatile bool djStatsResultDirty;
+    private DjStatsSnapshotMessage? djStatsSnapshot;
     private volatile bool djProfileDetailResultDirty;
     private DjProfileDetailSnapshotMessage? djProfileDetailSnapshot;
     private volatile bool djProfileSaveResultDirty;
@@ -167,6 +176,11 @@ public sealed class IpcServer
             }
             catch (OperationCanceledException)
             {
+                return;
+            }
+            catch (Exception ex) when (ex is IOException or ObjectDisposedException)
+            {
+                Console.WriteLine($"[EchoMix.AudioHost] Pipe closed while waiting for a client - exiting ({ex.Message}).");
                 return;
             }
 
@@ -498,6 +512,12 @@ public sealed class IpcServer
                 queuesDirty = true;
                 break;
 
+            case MessageType.MoveInDeckQueue:
+                var moveQueueCmd = envelope.ReadPayload<MoveInDeckQueueCommand>();
+                deckQueues.Move(moveQueueCmd.Deck, moveQueueCmd.Index, moveQueueCmd.Up);
+                queuesDirty = true;
+                break;
+
             case MessageType.PreviewTrack:
                 var previewCmd = envelope.ReadPayload<PreviewTrackCommand>();
                 if (!string.IsNullOrEmpty(previewCmd.FilePath) && File.Exists(previewCmd.FilePath))
@@ -637,6 +657,10 @@ public sealed class IpcServer
                 var showNameCmd = envelope.ReadPayload<SetShowNameCommand>();
                 _ = broadcastHost?.SetShowNameAsync(showNameCmd.ShowName) ?? Task.CompletedTask;
                 break;
+            case MessageType.SetPublicListing:
+                var listingCmd = envelope.ReadPayload<SetPublicListingCommand>();
+                _ = broadcastHost?.SetPublicListingAsync(listingCmd.IsPubliclyListed) ?? Task.CompletedTask;
+                break;
 
             case MessageType.SetWebListenLink:
                 var webListenLinkCmd = envelope.ReadPayload<SetWebListenLinkCommand>();
@@ -693,6 +717,9 @@ public sealed class IpcServer
 
             case MessageType.RequestDjProfiles:
                 _ = RequestDjProfilesAsync(envelope.ReadPayload<RequestDjProfilesMessage>());
+                break;
+            case MessageType.RequestDjStats:
+                _ = RequestDjStatsAsync(envelope.ReadPayload<RequestDjStatsMessage>());
                 break;
 
             case MessageType.GetDjProfileDetail:
@@ -762,6 +789,18 @@ public sealed class IpcServer
 
             case MessageType.RequestAudioInputDevices:
                 audioInputDevicesDirty = true;
+                break;
+
+            case MessageType.RequestAudioOutputDevices:
+                audioOutputDevicesDirty = true;
+                break;
+
+            case MessageType.SetSpotifyOutputDevice:
+                {
+                    var command = envelope.ReadPayload<SetSpotifyOutputDeviceCommand>();
+                    spotifyOutputDeviceId = string.IsNullOrWhiteSpace(command?.DeviceId) ? null : command!.DeviceId;
+                    Audio.SpotifyOutputRouting.SetDevice(spotifyOutputDeviceId);
+                }
                 break;
 
             case MessageType.RequestCapturableProcesses:
@@ -1148,6 +1187,13 @@ public sealed class IpcServer
         reportShowResultDirty = true;
     }
 
+    private async Task RequestDjStatsAsync(RequestDjStatsMessage cmd)
+    {
+        var (success, error, result) = await DjProfileClient.RequestStatsAsync(cmd);
+        djStatsSnapshot = success ? result! : new DjStatsSnapshotMessage { Error = error };
+        djStatsResultDirty = true;
+    }
+
     private async Task RequestDjProfilesAsync(RequestDjProfilesMessage cmd)
     {
         var (success, error, result) = await DjProfileClient.RequestProfilesAsync(cmd);
@@ -1271,6 +1317,9 @@ public sealed class IpcServer
 
         var ok = await mixer.StartSpotifyModeAsync();
         lastSpotifyModeError = ok ? null : mixer.SpotifyModeError;
+
+        if (ok && spotifyOutputDeviceId != null)
+            Audio.SpotifyOutputRouting.SetDevice(spotifyOutputDeviceId);
     }
 
     /// Same reasoning as StartSpotifyModeAsync above - Listen mode wants to be the only thing feeding the
@@ -1434,9 +1483,11 @@ public sealed class IpcServer
 
                 DrainCompletedSongRequests();
 
+                var stepStart = Stopwatch.GetTimestamp();
                 await SendAsync(pipe, IpcEnvelope.For(MessageType.MixerStatus, BuildMixerStatus()), token);
                 await SendAsync(pipe, IpcEnvelope.For(MessageType.Spectrum, new SpectrumMessage { Deck = DeckId.A, Bands = mixer.AnalyzerA.GetSpectrum(40) }), token);
                 await SendAsync(pipe, IpcEnvelope.For(MessageType.Spectrum, new SpectrumMessage { Deck = DeckId.B, Bands = mixer.AnalyzerB.GetSpectrum(40) }), token);
+                WarnIfSlow("building and pushing mixer status", stepStart);
 
                 if (listenClient != null)
                 {
@@ -1453,13 +1504,18 @@ public sealed class IpcServer
                     lastTrackInfoPushUtc = DateTime.UtcNow;
                     var (titleA, positionA, durationA) = GetDeckTrackInfo(DeckId.A);
                     var (titleB, positionB, durationB) = GetDeckTrackInfo(DeckId.B);
+
+                    var trackInfoStart = Stopwatch.GetTimestamp();
                     await broadcastHost.SetTrackInfoAsync(titleA, positionA, durationA, titleB, positionB, durationB, mixer.IsSpotifyModeActive);
+                    WarnIfSlow("pushing track info to the relay", trackInfoStart);
                 }
 
                 if (broadcastHost != null && DateTime.UtcNow - lastSpectrumPushUtc >= TimeSpan.FromMilliseconds(66))
                 {
                     lastSpectrumPushUtc = DateTime.UtcNow;
+                    var spectrumStart = Stopwatch.GetTimestamp();
                     await broadcastHost.SetSpectrumAsync(mixer.AnalyzerA.GetSpectrum(40), mixer.AnalyzerB.GetSpectrum(40));
+                    WarnIfSlow("pushing the spectrum to the relay", spectrumStart);
                 }
 
                 if (playlistsDirty)
@@ -1496,6 +1552,12 @@ public sealed class IpcServer
                     await SendAsync(pipe, IpcEnvelope.For(MessageType.CapturableProcessesSnapshot, BuildCapturableProcessesSnapshot()), token);
                 }
 
+                if (audioOutputDevicesDirty)
+                {
+                    audioOutputDevicesDirty = false;
+                    await SendAsync(pipe, IpcEnvelope.For(MessageType.AudioOutputDevicesSnapshot, BuildAudioOutputDevicesSnapshot()), token);
+                }
+
                 if (pendingSongRequestsDirty)
                 {
                     pendingSongRequestsDirty = false;
@@ -1526,6 +1588,12 @@ public sealed class IpcServer
                 {
                     djProfilesResultDirty = false;
                     await SendAsync(pipe, IpcEnvelope.For(MessageType.DjProfilesSnapshot, djProfilesSnapshot!), token);
+                }
+
+                if (djStatsResultDirty)
+                {
+                    djStatsResultDirty = false;
+                    await SendAsync(pipe, IpcEnvelope.For(MessageType.DjStatsSnapshot, djStatsSnapshot!), token);
                 }
 
                 if (djProfileDetailResultDirty)
@@ -1685,10 +1753,38 @@ public sealed class IpcServer
         PreviewingFilePath = mixer.PreviewingFilePath,
     };
 
+    /// Anything slower than this inside the status loop is a visible freeze, not a slow frame.
+    private static readonly TimeSpan StatusStallThreshold = TimeSpan.FromMilliseconds(40);
+
+    /// Rate limit on the warning itself - a genuine stall repeats every tick, and a log line per tick would
+    /// bury the thing it is reporting.
+    private static DateTime lastStallWarningUtc = DateTime.MinValue;
+    private static readonly TimeSpan StallWarningInterval = TimeSpan.FromSeconds(5);
+
+    /// Logs when a status-loop step blocks long enough to be seen.
+    private static void WarnIfSlow(string step, long startTimestamp)
+    {
+        var elapsed = Stopwatch.GetElapsedTime(startTimestamp);
+        if (elapsed < StatusStallThreshold)
+            return;
+
+        var now = DateTime.UtcNow;
+        if (now - lastStallWarningUtc < StallWarningInterval)
+            return;
+
+        lastStallWarningUtc = now;
+        Log.Warn($"Status loop blocked {elapsed.TotalMilliseconds:F0}ms while {step}. "
+            + "The meters and visualizer are frozen for exactly that long each time this happens.");
+    }
+
     private SpotifyModeStatusMessage BuildSpotifyModeStatus()
     {
         var active = mixer.IsSpotifyModeActive;
         var nowPlaying = active ? latestSpotifyNowPlaying : null;
+
+        var (routedId, routedName) = active
+            ? Audio.SpotifyOutputRouting.GetCurrentDevice()
+            : (spotifyOutputDeviceId, null);
 
         return new SpotifyModeStatusMessage
         {
@@ -1699,8 +1795,17 @@ public sealed class IpcServer
             NowPlayingPositionSeconds = (nowPlaying?.ProgressMs ?? 0) / 1000.0,
             NowPlayingDurationSeconds = (nowPlaying?.DurationMs ?? 0) / 1000.0,
             NowPlayingIsPlaying = nowPlaying?.IsPlaying ?? false,
+            RoutingAvailable = active && Audio.SpotifyOutputRouting.IsAvailable,
+            OutputDeviceId = routedId,
+            OutputDeviceName = routedName,
         };
     }
+
+    private AudioOutputDevicesSnapshotMessage BuildAudioOutputDevicesSnapshot() => new()
+    {
+        Devices = Audio.SpotifyOutputRouting.ListDevices(),
+        RoutingAvailable = Audio.SpotifyOutputRouting.IsAvailable,
+    };
 
     private ExternalInputModeStatusMessage BuildExternalInputModeStatus() => new()
     {

@@ -21,6 +21,9 @@ public static class DjProfileClient
     public static Task<(bool Success, string? Error, DjProfilesSnapshotMessage? Result)> RequestProfilesAsync(RequestDjProfilesMessage request) =>
         RoundTripAsync<DjProfilesSnapshotMessage>(RelayMessageType.RequestDjProfiles, request, RelayMessageType.DjProfilesSnapshot);
 
+    public static Task<(bool Success, string? Error, DjStatsSnapshotMessage? Result)> RequestStatsAsync(RequestDjStatsMessage request) =>
+        RoundTripAsync<DjStatsSnapshotMessage>(RelayMessageType.RequestDjStats, request, RelayMessageType.DjStatsSnapshot);
+
     public static Task<(bool Success, string? Error, DjProfileDetailSnapshotMessage? Result)> GetDetailAsync(GetDjProfileDetailMessage request) =>
         RoundTripAsync<DjProfileDetailSnapshotMessage>(RelayMessageType.GetDjProfileDetail, request, RelayMessageType.DjProfileDetailSnapshot);
 
