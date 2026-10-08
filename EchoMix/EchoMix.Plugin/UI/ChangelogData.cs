@@ -12,6 +12,16 @@ public static class ChangelogData
 {
     public static readonly ChangelogEntry[] Entries =
     {
+        new("2.0.0.4", new[]
+        {
+            new ChangelogGroup("Fixed", new[]
+            {
+                "Dragging a deck's seek bar jumped back to where the track was playing instead of moving it.",
+                "Moving the seek bar or the tempo on a paused deck now takes effect straight away, instead of waiting until you press play.",
+                "Menus like the Broadcast Source picker could be dragged away from the button that opened them.",
+                "Opening the window, or restoring it after minimizing, wrote an error to the Dalamud console.",
+            }),
+        }),
         new("2.0.0.3", new[]
         {
             new ChangelogGroup("Fixed", new[]

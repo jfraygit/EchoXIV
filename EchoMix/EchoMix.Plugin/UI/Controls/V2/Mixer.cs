@@ -740,14 +740,14 @@ public static class Mixer
         var committed = false;
         if (interactive)
         {
-            if (ImGui.IsItemActive())
+            var active = ImGui.IsItemActive();
+            committed = ImGui.IsItemDeactivated();
+
+            if (active || committed)
             {
                 var t = Math.Clamp((ImGui.GetIO().MousePos.X - min.X) / MathF.Max(1f, size.X), 0f, 1f);
                 value = t * duration;
             }
-
-            if (ImGui.IsItemDeactivated())
-                committed = true;
         }
 
         var fraction = duration > 0.01f ? Math.Clamp(value / duration, 0f, 1f) : 0f;

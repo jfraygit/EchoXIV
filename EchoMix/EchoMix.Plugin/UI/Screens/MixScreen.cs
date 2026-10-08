@@ -240,7 +240,7 @@ public sealed class MixScreen
             ImGui.OpenPopup("##v2sourcePopup");
 
         using var popupStyle = Sty.Popup();
-        if (!ImGui.BeginPopup("##v2sourcePopup"))
+        if (!ImGui.BeginPopup("##v2sourcePopup", Sty.PopupFlags))
             return;
 
         if (SourceOption("Decks", "Your own two decks, mixed with the crossfader.", !active))
@@ -591,8 +591,10 @@ public sealed class MixScreen
     {
         var client = plugin.AudioHostClient;
 
+        ImGui.OpenPopupOnItemClick(padId, ImGuiPopupFlags.MouseButtonRight);
+
         using var popupStyle = Sty.Popup();
-        if (!ImGui.BeginPopupContextItem(padId))
+        if (!ImGui.BeginPopup(padId, Sty.PopupFlags))
             return;
 
         if (ImGui.IsWindowAppearing())

@@ -291,6 +291,7 @@ public sealed class DeckEngine : ISampleProvider, IDisposable
         {
             Array.Clear(buffer, offset, count);
             playGain = 0f;
+            ApplyPendingChangesWhileSilent();
             FinishPendingUnload();
             return count;
         }
@@ -314,6 +315,36 @@ public sealed class DeckEngine : ISampleProvider, IDisposable
             FinishPendingUnload();
 
         return read;
+    }
+
+    /// Performs work queued for the next declick on a deck that is already silent, instead of leaving it
+    /// waiting for a fade that will never run.
+    private void ApplyPendingChangesWhileSilent()
+    {
+        lock (gate)
+        {
+            var seek = seekPending && reader != null;
+            var tempo = tempoChangePending && timeStretch != null;
+            if (!seek && !tempo)
+                return;
+
+            if (seek)
+            {
+                reader!.CurrentTime = pendingSeekTarget;
+                seekPending = false;
+            }
+
+            if (tempo)
+            {
+                timeStretch!.TempoRatio = pendingTempoRatio;
+                tempoChangePending = false;
+            }
+
+            declickFadingOut = false;
+            declickGain = 1f;
+        }
+
+        timeStretch?.Reset();
     }
 
     /// Fades this deck's output to silence, performs any pending seek once it gets there, then fades back in

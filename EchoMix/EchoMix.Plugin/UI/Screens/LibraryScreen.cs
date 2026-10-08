@@ -279,7 +279,7 @@ public sealed class LibraryScreen
             .Var(ImGuiStyleVar.WindowPadding, new Vector2(Metrics.Md, Metrics.Md))
             .Var(ImGuiStyleVar.ItemSpacing, new Vector2(Metrics.Md, Metrics.Xs));
 
-        if (!ImGui.BeginPopup(popupId))
+        if (!ImGui.BeginPopup(popupId, Sty.PopupFlags))
             return;
 
         if (ImGui.IsWindowAppearing())

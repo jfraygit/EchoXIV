@@ -405,7 +405,7 @@ public sealed class BrowseScreen
             .Var(ImGuiStyleVar.WindowPadding, new Vector2(Metrics.Lg, Metrics.Lg))
             .Var(ImGuiStyleVar.ItemSpacing, new Vector2(Metrics.Md, Metrics.Md));
 
-        if (!ImGui.BeginPopup(JoinPopupId, ImGuiWindowFlags.NoScrollbar))
+        if (!ImGui.BeginPopup(JoinPopupId, ImGuiWindowFlags.NoScrollbar | Sty.PopupFlags))
             return;
 
         using (TypeScale.Caption())

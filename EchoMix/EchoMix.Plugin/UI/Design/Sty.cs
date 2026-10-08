@@ -87,6 +87,9 @@ public struct Sty : IDisposable
             .Var(ImGuiStyleVar.ScrollbarSize, 10f * Metrics.Scale)
             .Var(ImGuiStyleVar.ScrollbarRounding, Metrics.RadiusSharp);
 
+    /// Window flags every popup this plugin opens must carry.
+    public const ImGuiWindowFlags PopupFlags = ImGuiWindowFlags.NoMove;
+
     /// Styling for a popup that ImGui itself owns and draws - a colour picker, a native combo, a context
     /// menu.
     public static Sty Popup()

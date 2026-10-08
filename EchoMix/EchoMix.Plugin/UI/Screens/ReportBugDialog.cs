@@ -38,7 +38,7 @@ public sealed class ReportBugDialog
         var windowSize = plugin.DjDeckWindow.CurrentWindowSize;
         ImGui.SetNextWindowPos(windowPos + (windowSize * 0.5f), ImGuiCond.Always, new Vector2(0.5f, 0.5f));
 
-        if (!ImGui.BeginPopup(PopupId))
+        if (!ImGui.BeginPopup(PopupId, Sty.PopupFlags))
             return;
 
         using var detached = Surfaces.Detach();

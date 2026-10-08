@@ -647,7 +647,8 @@ public sealed class EchoMixShellWindow : Window
             .Var(ImGuiStyleVar.WindowPadding, new Vector2(Metrics.Md, Metrics.Md))
             .Var(ImGuiStyleVar.ItemSpacing, new Vector2(Metrics.Md, Metrics.Xs));
 
-        if (!ImGui.BeginPopup(ProximityRangePopupId, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse))
+        if (!ImGui.BeginPopup(ProximityRangePopupId,
+                ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse | Sty.PopupFlags))
             return;
 
         using (TypeScale.Caption())

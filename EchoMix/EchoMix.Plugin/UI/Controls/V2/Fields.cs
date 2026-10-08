@@ -64,7 +64,7 @@ public static class Fields
             + (helperLines.Length > 0 ? Metrics.Xs + (helperLines.Length * helperLineHeight) : 0f);
         var height = MathF.Round(MathF.Max(controlHeight + (Metrics.Md * 2f), textHeight + (Metrics.Md * 2f)));
 
-        var hitWidth = rowClickable ? fullWidth : textWidth + Metrics.Lg;
+        var hitWidth = MathF.Max(Metrics.Xxl, rowClickable ? fullWidth : textWidth + Metrics.Lg);
         var clicked = ImGui.InvisibleButton($"{id}##row", new Vector2(hitWidth, height));
         var hovered = ImGui.IsItemHovered();
         if (hovered && rowClickable)
@@ -393,7 +393,7 @@ public static class Fields
             .Var(ImGuiStyleVar.ItemSpacing, Vector2.Zero)
             .Col(ImGuiCol.PopupBg, Elevation.Overlay);
 
-        if (!ImGui.BeginPopup(popupId))
+        if (!ImGui.BeginPopup(popupId, Sty.PopupFlags))
             return false;
 
         var popupDrawList = ImGui.GetWindowDrawList();
