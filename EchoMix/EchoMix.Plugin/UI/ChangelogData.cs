@@ -12,6 +12,13 @@ public static class ChangelogData
 {
     public static readonly ChangelogEntry[] Entries =
     {
+        new("2.0.0.3", new[]
+        {
+            new ChangelogGroup("Fixed", new[]
+            {
+                "Changing pages on the DJ list no longer jumps you back to the top.",
+            }),
+        }),
         new("2.0.0.2", new[]
         {
             new ChangelogGroup("Added", new[]

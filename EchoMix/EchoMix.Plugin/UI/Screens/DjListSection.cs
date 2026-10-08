@@ -225,7 +225,6 @@ public sealed class DjListSection
 
         page = next;
 
-        ImGui.SetScrollY(0f);
     }
 
     /// The DJ list as a grid of cards.
