@@ -24,8 +24,7 @@ public sealed class DjListSection
     private List<string> genreOptions = new();
     private object? genreOptionsSource;
     private string search = string.Empty;
-    private bool requested;
-    private long lastAutoRefresh;
+    private readonly RelayPoll poll = new();
 
     /// Which page of the grid is showing, and the filter state it was chosen under.
     private int page;
@@ -37,9 +36,6 @@ public sealed class DjListSection
 
     /// Rows per page.
     private const int GridRows = 3;
-
-    /// How long an automatic re-fetch waits before it is willing to go out again.
-    private const long AutoRefreshThrottleMs = 10_000;
 
     public DjListSection(Plugin plugin)
     {
@@ -60,12 +56,12 @@ public sealed class DjListSection
         if (character.Length == 0)
             return;
 
-        var now = Environment.TickCount64;
-        if (auto && requested && now - lastAutoRefresh < AutoRefreshThrottleMs)
+        if (auto && !poll.Due(plugin.AudioHostClient.IsConnected))
             return;
 
-        requested = true;
-        lastAutoRefresh = now;
+        if (!auto)
+            poll.Stamp();
+
         plugin.DjDeckWindow.RefreshDjProfiles(character);
     }
 
@@ -81,8 +77,8 @@ public sealed class DjListSection
             return;
         }
 
-        if (!requested)
-            Refresh();
+        if (!isSample)
+            Refresh(auto: true);
 
         var snapshot = client.LatestDjProfiles;
 
@@ -497,7 +493,7 @@ public sealed class DjListSection
             header.ControlMin.X, header.ControlMin.Y + ((header.Height - refreshSize) * 0.5f)));
 
         if (Fields.IconButton("##v2refreshDjs", FontAwesomeIcon.Sync, refreshSize,
-                "Refresh", "The list is a snapshot, not a live feed."))
+                "Refresh", "Updates on its own. Press to check now."))
         {
             Refresh();
         }

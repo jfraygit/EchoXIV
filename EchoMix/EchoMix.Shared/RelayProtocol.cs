@@ -699,6 +699,12 @@ public sealed class SaveDjProfileMessage
     public float NameColorB { get; set; } = 0.95f;
     public string? AetherphoneNumber { get; set; }
     public bool ShowLinkedCharacters { get; set; }
+
+    /// Proof that the sender owns this listing, rather than merely claiming its character name.
+    public string? OwnerToken { get; set; }
+
+    /// Whether this client is new enough to receive and keep a minted token.
+    public bool SupportsOwnerToken { get; set; }
 }
 
 public sealed class DjProfileSaveResultMessage
@@ -706,12 +712,23 @@ public sealed class DjProfileSaveResultMessage
     public bool Success { get; set; }
     public string? Error { get; set; }
     public string? ProfileId { get; set; }
+
+    /// Set only on the save that MINTS one - creating a listing, or an existing listing claiming its token
+    /// through the migration path.
+    public string? OwnerToken { get; set; }
+
+    /// Which character OwnerToken was issued to, echoed so the plugin can file it per character rather than
+    /// per listing.
+    public string? OwnerTokenCharacterName { get; set; }
 }
 
 public sealed class DeleteDjProfileMessage
 {
     public string Id { get; set; } = string.Empty;
     public string CharacterName { get; set; } = string.Empty;
+
+    /// See SaveDjProfileMessage.OwnerToken.
+    public string? OwnerToken { get; set; }
 }
 
 public sealed class DjProfileDeleteResultMessage
@@ -736,6 +753,9 @@ public sealed class DjProfileImageChunkMessage
     public int ChunkIndex { get; set; }
     public int TotalChunks { get; set; }
     public string DataBase64 { get; set; } = string.Empty;
+
+    /// See SaveDjProfileMessage.OwnerToken.
+    public string? OwnerToken { get; set; }
 }
 
 public sealed class DjProfileImageAckMessage
@@ -809,6 +829,9 @@ public sealed class GenerateProfileLinkCodeMessage
 {
     public string ProfileId { get; set; } = string.Empty;
     public string RequesterCharacterName { get; set; } = string.Empty;
+
+    /// See SaveDjProfileMessage.OwnerToken.
+    public string? OwnerToken { get; set; }
 }
 
 public sealed class ProfileLinkCodeResultMessage
@@ -834,6 +857,12 @@ public sealed class ProfileLinkRedeemResultMessage
     public string? Error { get; set; }
     public string? ProfileId { get; set; }
     public string? DjName { get; set; }
+
+    /// The profile's own token, handed to the character that just redeemed the code.
+    public string? OwnerToken { get; set; }
+
+    /// Which character OwnerToken was issued to - the redeeming one.
+    public string? OwnerTokenCharacterName { get; set; }
 }
 
 /// Removes one linked character - callable by the main or any other linked alt (anyone with edit rights),
@@ -843,6 +872,9 @@ public sealed class UnlinkProfileCharacterMessage
     public string ProfileId { get; set; } = string.Empty;
     public string RequesterCharacterName { get; set; } = string.Empty;
     public string CharacterNameToRemove { get; set; } = string.Empty;
+
+    /// See SaveDjProfileMessage.OwnerToken.
+    public string? OwnerToken { get; set; }
 }
 
 public sealed class ProfileUnlinkResultMessage

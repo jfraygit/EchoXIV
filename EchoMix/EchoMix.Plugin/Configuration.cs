@@ -187,6 +187,9 @@ public class Configuration : IPluginConfiguration
     /// release.
     public string? LastSeenChangelogVersion { get; set; }
 
+    /// Owner tokens for DJ listings this install can edit, keyed by profile id.
+    public Dictionary<string, string> DjProfileOwnerTokens { get; set; } = new();
+
     /// How much the main mix quiets down (for the DJ only, never for listeners) while cue-previewing an
     /// upcoming song - see MixerEngine.StartPreview.
     public float PreviewDampenVolume { get; set; } = 0.5f;

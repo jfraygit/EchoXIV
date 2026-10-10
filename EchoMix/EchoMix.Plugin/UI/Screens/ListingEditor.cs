@@ -19,7 +19,7 @@ public sealed class ListingEditor
     private readonly Plugin plugin;
 
     /// Set once the relay has been asked for this character's own detail, so the request doesn't repeat every
-    /// frame - each hop opens a fresh TCP+TLS connection against a 20-per-minute-per-IP limit.
+    /// frame - each hop opens a fresh TCP+TLS connection against a 60-per-minute-per-IP limit.
     private string? detailRequestedForId;
 
     /// The whole state machine, in one field.

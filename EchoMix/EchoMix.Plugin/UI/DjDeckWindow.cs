@@ -143,6 +143,9 @@ public sealed class DjDeckWindow : Window, IDisposable
     private bool djProfileDeleteSending;
     private DjProfileDeleteResultMessage? djProfileDeleteResult;
 
+    /// Which listing the in-flight delete is for, so its owner token can be dropped once the relay confirms.
+    private string? djProfileDeletePendingId;
+
     private readonly HashSet<string> djProfileLikePending = new();
     private readonly HashSet<string> djProfileFollowPending = new();
 
@@ -2716,10 +2719,12 @@ public sealed class DjDeckWindow : Window, IDisposable
             {
                 djProfileDeleteSending = true;
                 djProfileDeleteResult = null;
+                djProfileDeletePendingId = profile.Id;
                 plugin.AudioHostClient.Send(MessageType.DeleteDjProfile, new DeleteDjProfileMessage
                 {
                     Id = profile.Id,
                     CharacterName = Plugin.ObjectTable.LocalPlayer?.Name.TextValue ?? string.Empty,
+                    OwnerToken = DjProfileOwnership.TokenFor(plugin.Configuration, profile.Id),
                 });
             }
         }
@@ -3638,6 +3643,10 @@ public sealed class DjDeckWindow : Window, IDisposable
         plugin.AudioHostClient.Send(MessageType.SaveDjProfile, new SaveDjProfileMessage
         {
             CharacterName = Plugin.ObjectTable.LocalPlayer?.Name.TextValue ?? string.Empty,
+
+            OwnerToken = DjProfileOwnership.TokenFor(plugin.Configuration, editingDjProfileId),
+            SupportsOwnerToken = true,
+
             DjName = djEditDjNameBuffer.Trim(),
             Bio = WrappedInput.Unfold(djEditBioBuffer, djEditBioWrapWidth).Trim(),
             SavedVenues = new List<SavedVenueDto>(djEditSavedVenues),
@@ -3798,6 +3807,7 @@ public sealed class DjDeckWindow : Window, IDisposable
                             ProfileId = editingDjProfileId ?? string.Empty,
                             RequesterCharacterName = Plugin.ObjectTable.LocalPlayer?.Name.TextValue ?? string.Empty,
                             CharacterNameToRemove = linkedName,
+                            OwnerToken = DjProfileOwnership.TokenFor(plugin.Configuration, editingDjProfileId),
                         });
                     }
                 }
@@ -3852,6 +3862,7 @@ public sealed class DjDeckWindow : Window, IDisposable
                 {
                     ProfileId = editingDjProfileId ?? string.Empty,
                     RequesterCharacterName = Plugin.ObjectTable.LocalPlayer?.Name.TextValue ?? string.Empty,
+                    OwnerToken = DjProfileOwnership.TokenFor(plugin.Configuration, editingDjProfileId),
                 });
             }
 
@@ -4576,6 +4587,7 @@ public sealed class DjDeckWindow : Window, IDisposable
         {
             ProfileId = editingDjProfileId,
             RequesterCharacterName = Plugin.ObjectTable.LocalPlayer?.Name.TextValue ?? string.Empty,
+            OwnerToken = DjProfileOwnership.TokenFor(plugin.Configuration, editingDjProfileId),
         });
     }
 
@@ -4591,6 +4603,7 @@ public sealed class DjDeckWindow : Window, IDisposable
             ProfileId = editingDjProfileId,
             RequesterCharacterName = Plugin.ObjectTable.LocalPlayer?.Name.TextValue ?? string.Empty,
             CharacterNameToRemove = characterName,
+            OwnerToken = DjProfileOwnership.TokenFor(plugin.Configuration, editingDjProfileId),
         });
     }
 
@@ -4637,10 +4650,12 @@ public sealed class DjDeckWindow : Window, IDisposable
     {
         djProfileDeleteSending = true;
         djProfileDeleteResult = null;
+        djProfileDeletePendingId = profileId;
         plugin.AudioHostClient.Send(MessageType.DeleteDjProfile, new DeleteDjProfileMessage
         {
             Id = profileId,
             CharacterName = Plugin.ObjectTable.LocalPlayer?.Name.TextValue ?? string.Empty,
+            OwnerToken = DjProfileOwnership.TokenFor(plugin.Configuration, profileId),
         });
     }
 
@@ -6283,6 +6298,8 @@ public sealed class DjDeckWindow : Window, IDisposable
                             CharacterName = characterName,
                             Slot = "avatar",
                             SourceFilePath = djEditAvatarUploadPath,
+
+                            OwnerToken = DjProfileOwnership.TokenFor(plugin.Configuration, result.ProfileId),
                         });
                         djEditAvatarUploadPath = null;
                     }
@@ -6295,6 +6312,7 @@ public sealed class DjDeckWindow : Window, IDisposable
                             CharacterName = characterName,
                             Slot = "banner",
                             SourceFilePath = djEditBannerUploadPath,
+                            OwnerToken = DjProfileOwnership.TokenFor(plugin.Configuration, result.ProfileId),
                         });
                         djEditBannerUploadPath = null;
                     }
@@ -6318,6 +6336,11 @@ public sealed class DjDeckWindow : Window, IDisposable
             {
                 djProfileDeleteSending = false;
                 djProfileDeleteResult = result;
+
+                if (result.Success)
+                    DjProfileOwnership.Forget(plugin.Configuration, djProfileDeletePendingId);
+
+                djProfileDeletePendingId = null;
 
                 if (result.Success)
                 {

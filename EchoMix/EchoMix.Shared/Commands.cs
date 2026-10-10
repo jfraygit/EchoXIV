@@ -247,10 +247,11 @@ public sealed class SetDjProfileImageCommand
     public string ProfileId { get; set; } = string.Empty;
 
     /// Filled in by the plugin, not AudioHost - same reasoning as StartBroadcastCommand.CharacterName
-    /// (AudioHost has no Dalamud access of its own), and required here since the relay verifies this matches
-    /// the profile's own owner before writing anything to disk (see
-    /// RelayServer.HandleDjProfileImageUploadAsync).
+    /// (AudioHost has no Dalamud access of its own).
     public string CharacterName { get; set; } = string.Empty;
+
+    /// Proof of ownership, carried through AudioHost onto every chunk.
+    public string? OwnerToken { get; set; }
 
     /// "avatar" or "banner" - see DjProfileImageChunkMessage.Slot.
     public string Slot { get; set; } = string.Empty;

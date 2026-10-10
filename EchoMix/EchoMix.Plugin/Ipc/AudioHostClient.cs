@@ -19,6 +19,10 @@ public sealed class AudioHostClient : IDisposable
     private readonly object cacheGate = new();
     private readonly object writeGate = new();
     private NamedPipeClientStream? pipe;
+
+    /// Raised the instant a relay reply carries a freshly minted DJ listing owner token, as (profileId,
+    /// token).
+    public Action<string, string, string>? OwnerTokenMinted { get; set; }
     private StreamWriter? writer;
     private CancellationTokenSource? readCts;
     private DateTime lastMessageUtc = DateTime.MinValue;
@@ -444,9 +448,20 @@ public sealed class AudioHostClient : IDisposable
                 break;
 
             case MessageType.DjProfileSaveResult:
+            {
+                var saveResult = envelope.ReadPayload<DjProfileSaveResultMessage>();
                 lock (cacheGate)
-                    latestDjProfileSaveResult = envelope.ReadPayload<DjProfileSaveResultMessage>();
+                    latestDjProfileSaveResult = saveResult;
+
+                if (saveResult.Success && saveResult.ProfileId is { Length: > 0 } savedId
+                    && saveResult.OwnerToken is { Length: > 0 } savedToken
+                    && saveResult.OwnerTokenCharacterName is { Length: > 0 } savedFor)
+                {
+                    OwnerTokenMinted?.Invoke(savedId, savedFor, savedToken);
+                }
+
                 break;
+            }
 
             case MessageType.DjProfileDeleteResult:
                 lock (cacheGate)
@@ -479,9 +494,20 @@ public sealed class AudioHostClient : IDisposable
                 break;
 
             case MessageType.ProfileLinkRedeemResult:
+            {
+                var redeemResult = envelope.ReadPayload<ProfileLinkRedeemResultMessage>();
                 lock (cacheGate)
-                    latestProfileLinkRedeemResult = envelope.ReadPayload<ProfileLinkRedeemResultMessage>();
+                    latestProfileLinkRedeemResult = redeemResult;
+
+                if (redeemResult.Success && redeemResult.ProfileId is { Length: > 0 } linkedId
+                    && redeemResult.OwnerToken is { Length: > 0 } linkedToken
+                    && redeemResult.OwnerTokenCharacterName is { Length: > 0 } linkedFor)
+                {
+                    OwnerTokenMinted?.Invoke(linkedId, linkedFor, linkedToken);
+                }
+
                 break;
+            }
 
             case MessageType.ProfileUnlinkResult:
                 lock (cacheGate)

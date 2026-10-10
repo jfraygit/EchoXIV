@@ -12,6 +12,17 @@ public static class ChangelogData
 {
     public static readonly ChangelogEntry[] Entries =
     {
+        new("2.0.0.5", new[]
+        {
+            new ChangelogGroup("Changed", new[]
+            {
+                "Live Shows and the DJ list now keep themselves up to date, so you no longer need to press Refresh to see who has started or ended a show.",
+                "A genre filter on Live Shows stays put when the last show using it ends, instead of clearing itself.",
+                "Your DJ listing is now tied to your own install, so only you can edit, delete or share it.",
+                "A listing made before this update claims itself the first time you save it from your usual connection.",
+                "Likes and follows are limited per internet connection. People sharing one may reach that limit between them.",
+            }),
+        }),
         new("2.0.0.4", new[]
         {
             new ChangelogGroup("Fixed", new[]

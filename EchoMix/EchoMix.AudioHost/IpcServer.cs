@@ -1231,7 +1231,7 @@ public sealed class IpcServer
 
     private async Task SetDjProfileImageAsync(SetDjProfileImageCommand cmd)
     {
-        var (success, error) = await DjProfileClient.UploadImageAsync(cmd.ProfileId, cmd.CharacterName, cmd.Slot, cmd.SourceFilePath);
+        var (success, error) = await DjProfileClient.UploadImageAsync(cmd.ProfileId, cmd.CharacterName, cmd.Slot, cmd.SourceFilePath, cmd.OwnerToken);
         djProfileImageResult = new DjProfileImageAckMessage { Success = success, Error = error, ProfileId = cmd.ProfileId, Slot = cmd.Slot };
         djProfileImageResultDirty = true;
     }

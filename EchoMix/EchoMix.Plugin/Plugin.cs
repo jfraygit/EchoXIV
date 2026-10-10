@@ -89,6 +89,9 @@ public sealed class Plugin : IDalamudPlugin
     {
         Configuration = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
 
+        AudioHostClient.OwnerTokenMinted = (profileId, characterName, ownerToken) =>
+            DjProfileOwnership.Remember(Configuration, profileId, characterName, ownerToken);
+
         EditState.SeedFromConfiguration(Configuration);
 
         Theme.ApplyCustomColors(

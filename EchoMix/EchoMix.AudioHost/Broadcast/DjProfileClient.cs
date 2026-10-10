@@ -51,7 +51,7 @@ public static class DjProfileClient
     public static Task<(bool Success, string? Error, ProfileUnlinkResultMessage? Result)> UnlinkCharacterAsync(UnlinkProfileCharacterMessage request) =>
         RoundTripAsync<ProfileUnlinkResultMessage>(RelayMessageType.UnlinkProfileCharacter, request, RelayMessageType.ProfileUnlinkResult);
 
-    public static async Task<(bool Success, string? Error)> UploadImageAsync(string profileId, string characterName, string slot, string filePath)
+    public static async Task<(bool Success, string? Error)> UploadImageAsync(string profileId, string characterName, string slot, string filePath, string? ownerToken)
     {
         byte[] bytes;
         try
@@ -95,6 +95,8 @@ public static class DjProfileClient
                     ChunkIndex = i,
                     TotalChunks = totalChunks,
                     DataBase64 = Convert.ToBase64String(chunkBytes),
+
+                    OwnerToken = ownerToken,
                 };
 
                 var frameBytes = Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(RelayEnvelope.For(RelayMessageType.DjProfileImageChunk, chunk)));

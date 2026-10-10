@@ -44,7 +44,7 @@ public sealed class BrowseScreen
     private string pendingJoinRoomCode = string.Empty;
     private string joinPasswordBuffer = string.Empty;
 
-    private bool requestedShows;
+    private readonly RelayPoll showsPoll = new();
 
     /// True while the grid is showing fixtures.
     private bool IsSample
@@ -118,8 +118,6 @@ public sealed class BrowseScreen
 
         selected = next;
 
-        if (next == Category.Djs)
-            djList.Refresh(auto: true);
     }
 
 
@@ -128,11 +126,8 @@ public sealed class BrowseScreen
         var client = plugin.AudioHostClient;
         var snapshot = client.LatestPublicShows;
 
-        if (!requestedShows)
-        {
-            requestedShows = true;
+        if (!IsSample && showsPoll.Due(client.IsConnected))
             plugin.DjDeckWindow.RefreshPublicShows();
-        }
 
 #if DEBUG
 
@@ -170,7 +165,10 @@ public sealed class BrowseScreen
             genreOptions = DjDeckWindow.GenreOptions(snapshot.Shows.Select(s => s.Genres));
 
             if (genreFilter.Length > 0 && !genreOptions.Contains(genreFilter))
-                genreFilter = string.Empty;
+            {
+                genreOptions.Add(genreFilter);
+                genreOptions.Sort(StringComparer.OrdinalIgnoreCase);
+            }
         }
 
         var shows = genreFilter.Length == 0
@@ -184,7 +182,7 @@ public sealed class BrowseScreen
 
         if (snapshot.Shows.Count == 0)
         {
-            DrawNotice(FontAwesomeIcon.Music, "Nothing is live right now. Try Refresh in a bit.");
+            DrawNotice(FontAwesomeIcon.Music, "Nothing is live right now. Checking every few seconds.");
             return;
         }
 
@@ -227,8 +225,9 @@ public sealed class BrowseScreen
             header.ControlMin.X, header.ControlMin.Y + ((header.Height - refreshSize) * 0.5f)));
 
         if (Fields.IconButton("##v2refreshShows", FontAwesomeIcon.Sync, refreshSize,
-                "Refresh", "The list is a snapshot, not a live feed."))
+                "Refresh", "Updates on its own. Press to check now."))
         {
+            showsPoll.Stamp();
             plugin.DjDeckWindow.RefreshPublicShows();
         }
 
