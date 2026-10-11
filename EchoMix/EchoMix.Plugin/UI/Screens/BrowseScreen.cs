@@ -257,7 +257,8 @@ public sealed class BrowseScreen
         var thumbHeight = MathF.Round(thumbWidth * 9f / 16f);
         var actionsWidth = MathF.Round(118f * Metrics.Scale);
 
-        ImGui.InvisibleButton($"##showRow{show.RoomCode}", new Vector2(width, height));
+        var hitWidth = MathF.Max(Metrics.Xxl, width - actionsWidth - Metrics.Xl - Metrics.Md);
+        ImGui.InvisibleButton($"##showRow{show.RoomCode}", new Vector2(hitWidth, height));
         if (ImGui.IsItemHovered())
             drawList.AddRectFilled(origin, origin + new Vector2(width, height),
                 ImGui.GetColorU32(Semantic.Alpha(Semantic.TextPrimary, 0.03f)), Metrics.RadiusSoft);
