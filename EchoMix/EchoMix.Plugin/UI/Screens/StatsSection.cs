@@ -230,7 +230,7 @@ public sealed class StatsSection
             var pos = new Vector2(origin.X + (column * (panelWidth + gap)), rowTop);
             ImGui.SetCursorScreenPos(pos);
 
-            var height = DrawBoard(board, title, blurb, panelWidth, blurbHeight);
+            var height = DrawBoard(board, title, blurb, snapshot.Avatars, panelWidth, blurbHeight);
             rowHeight = MathF.Max(rowHeight, height);
             drawn++;
         }
@@ -249,7 +249,7 @@ public sealed class StatsSection
     }
 
     /// One board.
-    private float DrawBoard(DjStatBoardDto board, string title, string blurb, float width, float blurbHeight)
+    private float DrawBoard(DjStatBoardDto board, string title, string blurb, IReadOnlyDictionary<string, string> avatars, float width, float blurbHeight)
     {
         var origin = Chrome.Snap(ImGui.GetCursorScreenPos());
 
@@ -302,7 +302,7 @@ public sealed class StatsSection
             var avatarPos = Chrome.Snap(new Vector2(
                 pos.X + rankWidth + Metrics.Md, pos.Y + ((rowHeight - avatar) * 0.5f)));
 
-            DrawRowAvatar(drawList, entry, avatarPos, avatar);
+            DrawRowAvatar(drawList, entry, avatars, avatarPos, avatar);
 
             var valueText = Format(board.Key, entry.Value);
             float valueWidth;
@@ -333,9 +333,13 @@ public sealed class StatsSection
         return ImGui.GetCursorScreenPos().Y - origin.Y;
     }
 
-    private void DrawRowAvatar(ImDrawListPtr drawList, DjStatEntryDto entry, Vector2 pos, float size)
+    /// Avatars come from the snapshot's one map rather than from the row, because the rows are not distinct
+    /// DJs - the same person tops several boards, and a copy per row is what pushed this message past the
+    /// relay's frame ceiling.
+    private void DrawRowAvatar(ImDrawListPtr drawList, DjStatEntryDto entry, IReadOnlyDictionary<string, string> avatars, Vector2 pos, float size)
     {
-        var texture = plugin.DjDeckWindow.DjAvatarImage(entry.ProfileId, entry.AvatarBase64);
+        avatars.TryGetValue(entry.ProfileId, out var avatarBase64);
+        var texture = plugin.DjDeckWindow.DjAvatarImage(entry.ProfileId, avatarBase64);
         var box = new Vector2(size, size);
 
         if (texture != null)

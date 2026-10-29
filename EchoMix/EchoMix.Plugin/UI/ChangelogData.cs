@@ -12,6 +12,20 @@ public static class ChangelogData
 {
     public static readonly ChangelogEntry[] Entries =
     {
+        new("2.0.1.0", new[]
+        {
+            new ChangelogGroup("Added", new[]
+            {
+                "Gold, silver and bronze badges for the top three in each stat that resets every month, awarded shortly after the month ends.",
+                "A placing badge lists every stat it was won in, so topping four boards earns one gold badge rather than four.",
+                "Most Liked and Most Followed do not award badges, because they count all time rather than the month.",
+            }),
+            new ChangelogGroup("Fixed", new[]
+            {
+                "The Stats tab could fail to load, showing a message about not being able to reach the relay.",
+                "DJ pictures are shown on the Stats boards again.",
+            }),
+        }),
         new("2.0.0.6", new[]
         {
             new ChangelogGroup("Fixed", new[]

@@ -542,8 +542,53 @@ public sealed class DjBadgeDto
     /// Everyone who had a listing before EchoMix 2.0.
     public const string FounderOneOh = "founder-1.0";
 
+    /// "monthly-2026-10-gold" and friends - a month's final standings, granted once that month has closed.
+    public const string MonthlyPrefix = "monthly-";
+
+    /// Rank 1/2/3 as the word that appears in the id.
+    private static readonly string[] MonthlyTiers = { "", "gold", "silver", "bronze" };
+
+    /// How many places each month awards.
+    public const int MonthlyPlaces = 3;
+
     public string Id { get; set; } = string.Empty;
     public DateTime AwardedAtUtc { get; set; }
+
+    /// Which boards this medal was won on, as board KEYS ("ShowsPlayed", "OnAirSeconds") - the same stable
+    /// identifiers DjStatBoardDto.Key uses, with the wording owned by the plugin.
+    public List<string> Categories { get; set; } = new();
+
+    /// The id for a given month and placing.
+    public static string MonthlyId(string monthKey, int rank) =>
+        $"{MonthlyPrefix}{monthKey}-{MonthlyTiers[rank]}";
+
+    /// Reads a monthly id back apart.
+    public static bool TryParseMonthly(string id, out string monthKey, out int rank)
+    {
+        monthKey = string.Empty;
+        rank = 0;
+
+        if (string.IsNullOrEmpty(id) || !id.StartsWith(MonthlyPrefix, StringComparison.Ordinal))
+            return false;
+
+        var rest = id[MonthlyPrefix.Length..];
+        var split = rest.LastIndexOf('-');
+        if (split <= 0)
+            return false;
+
+        var tier = rest[(split + 1)..];
+        for (var i = 1; i < MonthlyTiers.Length; i++)
+        {
+            if (!string.Equals(tier, MonthlyTiers[i], StringComparison.Ordinal))
+                continue;
+
+            monthKey = rest[..split];
+            rank = i;
+            return true;
+        }
+
+        return false;
+    }
 }
 
 /// One DJ List card, as shown in the browse grid - see RelayServer's DJ profile handlers.
@@ -953,9 +998,11 @@ public sealed class DjStatTotalsDto
 public sealed class DjStatEntryDto
 {
     public int Rank { get; set; }
+
+    /// Also the key into DjStatsSnapshotMessage.Avatars - a row carries no image bytes of its own,
+    /// deliberately.
     public string ProfileId { get; set; } = string.Empty;
     public string DjName { get; set; } = string.Empty;
-    public string? AvatarBase64 { get; set; }
     public float FrameColorR { get; set; }
     public float FrameColorG { get; set; }
     public float FrameColorB { get; set; }
@@ -983,6 +1030,10 @@ public sealed class DjStatBoardDto
 public sealed class DjStatsSnapshotMessage
 {
     public List<DjStatBoardDto> Boards { get; set; } = new();
+
+    /// Avatar JPEG bytes as base64, keyed by profile id - **one entry per DJ, however many boards they appear
+    /// on**.
+    public Dictionary<string, string> Avatars { get; set; } = new();
 
     /// The caller's own totals, or null if they have no DJ listing at all - which is different from having
     /// one with no shows on it, and the tab says so differently.

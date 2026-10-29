@@ -4463,7 +4463,7 @@ public sealed class DjDeckWindow : Window, IDisposable
     /// reasoning as PublicShowImage above.
     public IDalamudTextureWrap? DjAvatarImage(string cacheKey, string? avatarBase64)
     {
-        if (string.IsNullOrEmpty(avatarBase64))
+        if (string.IsNullOrEmpty(cacheKey))
             return null;
 
         bool hasEntry;
@@ -4473,12 +4473,13 @@ public sealed class DjDeckWindow : Window, IDisposable
         lock (djProfileImageGate)
         {
             hasEntry = djProfileAvatarCache.TryGetValue(cacheKey, out texture);
-            if (!hasEntry)
+
+            if (!hasEntry && !string.IsNullOrEmpty(avatarBase64))
                 shouldStartLoad = djProfileAvatarLoading.Add(cacheKey);
         }
 
         if (shouldStartLoad)
-            _ = LoadDjProfileAvatarAsync(cacheKey, avatarBase64);
+            _ = LoadDjProfileAvatarAsync(cacheKey, avatarBase64!);
 
         return hasEntry ? texture : null;
     }

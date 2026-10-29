@@ -116,6 +116,24 @@ public sealed class DjProfileSection
     }
 
     /// What this DJ has been granted, as a row of small marks under their picture.
+    private static string CategoryLines(DjBadgeDto badge)
+    {
+        if (badge.Categories.Count == 0)
+            return string.Empty;
+
+        var titles = new List<string>();
+        foreach (var key in badge.Categories)
+        {
+            if (BadgeCatalog.CategoryTitle(key) is { } title)
+                titles.Add(title);
+        }
+
+        if (titles.Count == 0)
+            return string.Empty;
+
+        return "\n\n" + string.Join("\n", titles);
+    }
+
     private void DrawBadges(DjProfileDetailDto profile)
     {
         if (profile.Badges.Count == 0)
@@ -172,7 +190,7 @@ public sealed class DjProfileSection
             if (hovered)
             {
                 var awarded = badge.AwardedAtUtc.ToLocalTime().ToString("d MMM yyyy", CultureInfo.InvariantCulture);
-                Tip.Hovered(entry.Title, $"{entry.Description}\n\nObtained {awarded}");
+                Tip.Hovered(entry.Title, $"{entry.Description}{CategoryLines(badge)}\n\nObtained {awarded}");
             }
 
             x += size + gap;

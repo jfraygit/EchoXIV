@@ -136,9 +136,24 @@ internal static class BrowseSampleData
             UniqueListeners = 147 * scale,
         };
 
+        var avatars = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var board in boards)
+        {
+            foreach (var entry in board.Entries)
+            {
+                if (avatars.ContainsKey(entry.ProfileId))
+                    continue;
+
+                var profile = profiles.FirstOrDefault(p => p.Id == entry.ProfileId);
+                if (!string.IsNullOrEmpty(profile?.AvatarBase64))
+                    avatars[entry.ProfileId] = profile.AvatarBase64;
+            }
+        }
+
         return new DjStatsSnapshotMessage
         {
             Boards = boards,
+            Avatars = avatars,
             You = you,
             IsMonth = monthOnly,
             MonthKey = monthOnly ? "2026-10" : null,
@@ -165,7 +180,6 @@ internal static class BrowseSampleData
                     Rank = ++rank,
                     ProfileId = row.Profile.Id,
                     DjName = row.Profile.DjName,
-                    AvatarBase64 = row.Profile.AvatarBase64,
                     FrameColorR = row.Profile.FrameColorR,
                     FrameColorG = row.Profile.FrameColorG,
                     FrameColorB = row.Profile.FrameColorB,
@@ -239,6 +253,38 @@ internal static class BrowseSampleData
             {
                 Id = DjBadgeDto.FounderOneOh,
                 AwardedAtUtc = new DateTime(2026, 1 + (seed % 9), 1 + (seed % 27), 0, 0, 0, DateTimeKind.Utc),
+            });
+        }
+
+        var monthlyAwardedAt = new DateTime(2026, 10, 1, 12, 0, 0, DateTimeKind.Utc);
+        if (seed % 3 == 0)
+        {
+            badges.Add(new DjBadgeDto
+            {
+                Id = DjBadgeDto.MonthlyId("2026-10", 1),
+                AwardedAtUtc = monthlyAwardedAt,
+                Categories = new List<string> { "ShowsPlayed", "OnAirSeconds", "DaysActive" },
+            });
+            badges.Add(new DjBadgeDto
+            {
+                Id = DjBadgeDto.MonthlyId("2026-10", 2),
+                AwardedAtUtc = monthlyAwardedAt,
+                Categories = new List<string> { "ListenerSeconds" },
+            });
+            badges.Add(new DjBadgeDto
+            {
+                Id = DjBadgeDto.MonthlyId("2026-10", 3),
+                AwardedAtUtc = monthlyAwardedAt,
+                Categories = new List<string> { "PeakListeners", "UniqueListeners" },
+            });
+        }
+        else if (seed % 3 == 1)
+        {
+            badges.Add(new DjBadgeDto
+            {
+                Id = DjBadgeDto.MonthlyId("2026-10", 2),
+                AwardedAtUtc = monthlyAwardedAt,
+                Categories = new List<string> { "PeakListeners" },
             });
         }
 
