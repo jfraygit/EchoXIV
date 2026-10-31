@@ -595,11 +595,22 @@ public sealed class ProfileTab : IDisposable
         var offset = radius * 0.68f;
         var badgeCentre = centre + new Vector2(offset, offset);
 
+        const float BadgeInkFill = 0.58f;
+
+        const float BadgeOpticalNudge = 0.06f;
+
         drawList.AddCircleFilled(badgeCentre, (badge / 2f) + Stroke.Mark, Col.U32(Col.Window));
         drawList.AddCircleFilled(badgeCentre, badge / 2f, Col.U32(Theme.Accent));
 
+        var inkBox = badge * BadgeInkFill;
+
         using (plugin.Fonts.Icon.PushSafe())
-            UiHelpers.DrawScaledIcon(drawList, FontAwesomeIcon.Camera, badgeCentre, Col.U32(Col.TextOnAccent));
+        {
+            UiHelpers.DrawFittedIcon(
+                drawList, FontAwesomeIcon.Camera,
+                badgeCentre with { X = badgeCentre.X + (inkBox * BadgeOpticalNudge) }, inkBox,
+                Col.U32(Col.TextOnAccent));
+        }
 
         if (!ImGui.IsMouseHoveringRect(min, min + new Vector2(disc, disc)))
             return;

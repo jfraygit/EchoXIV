@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Numerics;
 using Dalamud.Configuration;
 
@@ -72,6 +73,20 @@ public sealed class Configuration : IPluginConfiguration
 
     /// The newest changelog entry the player has actually had open.
     public string? LastSeenChangelogVersion { get; set; }
+
+    /// Dye ids the player has starred, in no particular order.
+    public List<byte> FavouriteDyes { get; set; } = [];
+
+    public bool IsFavouriteDye(byte id) => FavouriteDyes.Contains(id);
+
+    /// Stars or unstars a dye and saves.
+    public void ToggleFavouriteDye(byte id)
+    {
+        if (!FavouriteDyes.Remove(id))
+            FavouriteDyes.Add(id);
+
+        Save();
+    }
 
     /// This installation's identity on the relay.
     public string OwnerKey { get; set; } = string.Empty;

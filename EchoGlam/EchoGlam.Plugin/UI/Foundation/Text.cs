@@ -184,17 +184,23 @@ public static class Text
             text = TruncateTracked(text, maxWidth, trackingDesign);
 
         var tracking = trackingDesign * UiHelpers.Scale;
-        var x = pos.X;
+
+        var pen = MathF.Round(pos.X);
+        var baseline = MathF.Round(pos.Y);
+        var start = pen;
 
         foreach (var character in text)
         {
             var glyph = character.ToString();
-            drawList.AddText(new Vector2(MathF.Round(x), MathF.Round(pos.Y)), colour, glyph);
-            x += Width(glyph) + tracking;
+            drawList.AddText(new Vector2(pen, baseline), colour, glyph);
+            pen += Step(glyph, tracking);
         }
 
-        return MathF.Max(0f, x - pos.X - tracking);
+        return MathF.Max(0f, pen - start - tracking);
     }
+
+    /// One glyph's advance plus the tracking that follows it, snapped to whole pixels.
+    private static float Step(string glyph, float tracking) => MathF.Round(Width(glyph) + tracking);
 
 
     /// Shortens tracked text to fit, measuring WITH the tracking.
@@ -240,7 +246,7 @@ public static class Text
         var total = 0f;
 
         foreach (var character in text)
-            total += Width(character.ToString()) + tracking;
+            total += Step(character.ToString(), tracking);
 
         return MathF.Max(0f, total - tracking);
     }

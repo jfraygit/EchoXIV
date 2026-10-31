@@ -12,6 +12,24 @@ public static class ChangelogData
     /// not read", and lighting it up for a build that was never published teaches people to ignore it.
     public static readonly ChangelogEntry[] Entries =
     [
+        new("2.0.0.1",
+        [
+            new ChangelogGroup("Added",
+            [
+                "Right-click a dye to make it a favourite. Your favourites sit together at the top "
+                + "of the dye list instead of among the rest, on both channels.",
+            ]),
+            new ChangelogGroup("Fixed",
+            [
+                "The cross at the end of a search box did not clear what you had typed.",
+                "Headings and labels set in spaced capitals had uneven gaps between their letters, "
+                + "which made some letters look a different size from their neighbours.",
+                "The EchoGlam wordmark was slightly blurred.",
+                "The camera mark on your profile picture was too large for its circle and sat "
+                + "left of the middle.",
+            ]),
+        ]),
+
         new("2.0.0.0",
         [
             new ChangelogGroup("Added",

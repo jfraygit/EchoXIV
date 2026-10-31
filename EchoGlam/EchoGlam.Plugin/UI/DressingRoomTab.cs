@@ -1487,60 +1487,120 @@ public sealed class DressingRoomTab
             var active = channel == 0 ? current.Stain0 : current.Stain1;
             var available = ImGui.GetContentRegionAvail().X;
             var perRow = Math.Max(1, (int)((available + gap) / (swatch + gap)));
-            var column = 0;
+
+            bool Survives(Dye dye) =>
+                !filtered
+                || dye.Id == active
+                || dye.Name.Contains(filter, StringComparison.OrdinalIgnoreCase);
+
+            var starred = 0;
+            foreach (var dye in Dyes.Palette)
+            {
+                if (plugin.Configuration.IsFavouriteDye(dye.Id) && Survives(dye))
+                    starred++;
+            }
 
             var shown = 0;
 
-            foreach (var dye in Dyes.Palette)
+            if (starred > 0)
             {
-                if (filtered
-                    && dye.Id != active
-                    && !dye.Name.Contains(filter, StringComparison.OrdinalIgnoreCase))
-                    continue;
+                using (Text.PushCaption())
+                    ImGui.TextColored(Theme.TextDim, "Favourites");
 
-                if (column > 0 && column % perRow != 0)
-                    ImGui.SameLine(0f, gap);
+                ImGui.Dummy(new Vector2(0f, Sp.Xs));
 
-                var origin = ImGui.GetCursorScreenPos();
-                var clicked = ImGui.InvisibleButton($"##dye{channel}_{dye.Id}", new Vector2(swatch, swatch), ImGuiButtonFlags.MouseButtonLeft);
-                var hovered = ImGui.IsItemHovered();
+                shown += DrawDyeRun(channel, active, perRow, swatch, gap, Survives, favourites: true);
 
-                if (clicked)
-                {
-                    if (channel == 0)
-                        Wardrobe.SetDye(selectedSlot, dye.Id, current.Stain1);
-                    else
-                        Wardrobe.SetDye(selectedSlot, current.Stain0, dye.Id);
+                ImGui.Dummy(new Vector2(0f, Sp.Sm));
 
-                    if (channel == 0)
-                        stickyStain0 = dye.Id;
-                    else
-                        stickyStain1 = dye.Id;
-                }
-
-                if (hovered)
-                    UiHelpers.WrappedTooltip(dye.Name);
-
+                var ruleY = ImGui.GetCursorScreenPos().Y;
+                var ruleLeft = ImGui.GetCursorScreenPos().X;
                 drawList.AddRectFilled(
-                    origin, origin + new Vector2(swatch, swatch), ImGui.GetColorU32(dye.Colour), 4f * scale);
+                    new Vector2(ruleLeft, ruleY),
+                    new Vector2(ruleLeft + available, ruleY + Stroke.Hair),
+                    Col.U32(Theme.Border with { W = Theme.Border.W * 0.7f }));
 
-                var ring = dye.Id == active
-                    ? Theme.Accent
-                    : new Vector4(1f, 1f, 1f, hovered ? 0.55f : 0.15f);
-
-                drawList.AddRect(
-                    origin, origin + new Vector2(swatch, swatch), ImGui.GetColorU32(ring),
-                    4f * scale, ImDrawFlags.None, (dye.Id == active ? 2.5f : 1f) * scale);
-
-                column++;
-                shown++;
+                ImGui.Dummy(new Vector2(0f, Sp.Md));
             }
+
+            shown += DrawDyeRun(channel, active, perRow, swatch, gap, Survives, favourites: false);
 
             if (shown == 0)
                 ImGui.TextColored(Theme.TextDim, $"No dye matches \"{filter}\".");
 
             ImGui.Dummy(new Vector2(0f, 10f * scale));
         }
+    }
+
+    /// One run of swatches: either the starred dyes or everything else, never both.
+    private int DrawDyeRun(
+        int channel, byte active, int perRow, float swatch, float gap,
+        Func<Dye, bool> survives, bool favourites)
+    {
+        var scale = UiHelpers.Scale;
+        var drawList = ImGui.GetWindowDrawList();
+        var entry = Wardrobe.EntryFor(selectedSlot);
+        if (entry is not { } current)
+            return 0;
+
+        var column = 0;
+
+        foreach (var dye in Dyes.Palette)
+        {
+            if (plugin.Configuration.IsFavouriteDye(dye.Id) != favourites)
+                continue;
+
+            if (!survives(dye))
+                continue;
+
+            if (column > 0 && column % perRow != 0)
+                ImGui.SameLine(0f, gap);
+
+            var origin = ImGui.GetCursorScreenPos();
+
+            var clicked = ImGui.InvisibleButton(
+                $"##dye{channel}_{dye.Id}", new Vector2(swatch, swatch), ImGuiButtonFlags.MouseButtonLeft);
+
+            var hovered = ImGui.IsItemHovered();
+
+            if (clicked)
+            {
+                if (channel == 0)
+                    Wardrobe.SetDye(selectedSlot, dye.Id, current.Stain1);
+                else
+                    Wardrobe.SetDye(selectedSlot, current.Stain0, dye.Id);
+
+                if (channel == 0)
+                    stickyStain0 = dye.Id;
+                else
+                    stickyStain1 = dye.Id;
+            }
+
+            if (hovered && ImGui.IsMouseClicked(ImGuiMouseButton.Right))
+                plugin.Configuration.ToggleFavouriteDye(dye.Id);
+
+            if (hovered)
+            {
+                UiHelpers.WrappedTooltip(favourites
+                    ? $"{dye.Name}\n\nRight-click to remove it from your favourites."
+                    : $"{dye.Name}\n\nRight-click to add it to your favourites.");
+            }
+
+            drawList.AddRectFilled(
+                origin, origin + new Vector2(swatch, swatch), ImGui.GetColorU32(dye.Colour), 4f * scale);
+
+            var ring = dye.Id == active
+                ? Theme.Accent
+                : new Vector4(1f, 1f, 1f, hovered ? 0.55f : 0.15f);
+
+            drawList.AddRect(
+                origin, origin + new Vector2(swatch, swatch), ImGui.GetColorU32(ring),
+                4f * scale, ImDrawFlags.None, (dye.Id == active ? 2.5f : 1f) * scale);
+
+            column++;
+        }
+
+        return column;
     }
 
     /// Kept across opens rather than cleared each time.

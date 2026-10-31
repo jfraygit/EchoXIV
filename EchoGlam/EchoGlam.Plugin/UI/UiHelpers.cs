@@ -277,6 +277,8 @@ public static class UiHelpers
         if (overClear && ImGui.IsMouseClicked(ImGuiMouseButton.Left))
         {
             text = string.Empty;
+
+            ImGuiP.ClearActiveID();
             return true;
         }
 
@@ -399,12 +401,16 @@ public static class UiHelpers
         var width = 0f;
 
         foreach (var character in text)
-            width += ImGui.CalcTextSize(character.ToString()).X + tracking;
+            width += WordmarkStep(character, tracking);
 
         width = MathF.Max(0f, width - tracking);
 
         return new Vector2(width, ImGui.GetFontSize() + (7f * Scale));
     }
+
+    /// One wordmark letter's advance plus its tracking, snapped to whole pixels.
+    private static float WordmarkStep(char character, float tracking) =>
+        MathF.Round(ImGui.CalcTextSize(character.ToString()).X + tracking);
 
     /// The plugin's name set as a wordmark: tracked capitals in the accent, with a shadow and an underline.
     public static void DrawWordmark(string text, Vector2 screenPos)
@@ -415,15 +421,17 @@ public static class UiHelpers
         var drawList = ImGui.GetWindowDrawList();
         var fontSize = ImGui.GetFontSize();
 
-        var x = screenPos.X;
+        var x = MathF.Round(screenPos.X);
+        var top = MathF.Round(screenPos.Y);
+        var shadowDrop = MathF.Round(2f * scale);
 
         foreach (var character in text)
         {
             var glyph = character.ToString();
             drawList.AddText(
-                new Vector2(x, screenPos.Y + (2f * scale)), ImGui.GetColorU32(new Vector4(0f, 0f, 0f, 0.45f)), glyph);
-            drawList.AddText(new Vector2(x, screenPos.Y), ImGui.GetColorU32(Theme.Accent), glyph);
-            x += ImGui.CalcTextSize(glyph).X + tracking;
+                new Vector2(x, top + shadowDrop), ImGui.GetColorU32(new Vector4(0f, 0f, 0f, 0.45f)), glyph);
+            drawList.AddText(new Vector2(x, top), ImGui.GetColorU32(Theme.Accent), glyph);
+            x += WordmarkStep(character, tracking);
         }
 
         var underlineY = screenPos.Y + fontSize + (3f * scale);
