@@ -26,6 +26,9 @@ public sealed class GalleryQuery
 
     public int Page { get; set; }
 
+    /// How many entries a page holds, or 0 for the relay's own default of 24.
+    public int PageSize { get; set; }
+
     /// A shallow copy, so a filter change starts from the current query without the caller having to restate
     /// the six fields it did not touch.
     public GalleryQuery Clone() => (GalleryQuery)MemberwiseClone();
@@ -39,7 +42,8 @@ public sealed class GallerySettings
     public string[] ReportReasons { get; set; } = Shared.ReportReasons.All;
     public bool SubmissionsOpen { get; set; }
     public int MaximumImages { get; set; } = 3;
-    public int MaximumTitle { get; set; } = 60;
+    /// Replaced by whatever the relay reports; this is only what the form uses before the settings land.
+    public int MaximumTitle { get; set; } = 40;
     public int MaximumDescription { get; set; } = 600;
     public int MaximumPerOwner { get; set; } = 20;
 
@@ -62,6 +66,9 @@ public static class GalleryClient
     {
         var url = new StringBuilder($"{BaseUrl}/glamours?sort={Uri.EscapeDataString(query.Sort)}");
         url.Append($"&page={Math.Max(0, query.Page)}");
+
+        if (query.PageSize > 0)
+            url.Append($"&pageSize={query.PageSize}");
 
         if (!string.IsNullOrWhiteSpace(query.Text))
             url.Append($"&q={Uri.EscapeDataString(query.Text)}");
@@ -87,9 +94,6 @@ public static class GalleryClient
         return RequireAsync<GlamourPage>(HttpMethod.Get, url.ToString(), ownerKey, null, cancel);
     }
 
-    /// What this installation has saved.
-    public static Task<GlamourPage> FavouritesAsync(string ownerKey, CancellationToken cancel) =>
-        RequireAsync<GlamourPage>(HttpMethod.Get, $"{BaseUrl}/favourites", ownerKey, null, cancel);
 
     /// One entry with its gear list, or null when it is no longer on the board.
     public static Task<GlamourDetail?> DetailAsync(string id, string ownerKey, CancellationToken cancel) =>
@@ -128,7 +132,10 @@ public static class GalleryClient
         $"{BaseUrl}/profiles/{Uri.EscapeDataString(profile.Id)}/avatar?v={Uri.EscapeDataString(profile.ImageStamp)}";
 
     /// An avatar by publisher id alone, for callers that have one without their profile.
-    public static string AvatarUrl(string profileId) =>
+    public static string AvatarUrl(string profileId) => AvatarUrlPrefix(profileId);
+
+    /// What every address for somebody's avatar begins with, stamped or not.
+    public static string AvatarUrlPrefix(string profileId) =>
         $"{BaseUrl}/profiles/{Uri.EscapeDataString(profileId)}/avatar";
 
     public static string BannerUrl(ProfileSummary profile) =>

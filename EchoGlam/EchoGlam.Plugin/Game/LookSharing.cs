@@ -85,8 +85,38 @@ public sealed class LookSharing : IDisposable
 
     private readonly Dictionary<string, Claim> claims = new(StringComparer.OrdinalIgnoreCase);
 
+    /// Seeded live and sharing states, for the dev friend fixture.
+    private HashSet<string>? fakeSharing;
+
+    private HashSet<string>? fakeDrawing;
+
+    /// Gated at FakeFriends.Apply, which is the only caller - see the note on Friendships.ApplyFixture for
+    /// why a second check does not go here.
+    internal void ApplyFixture(HashSet<string> sharing, HashSet<string> drawing)
+    {
+        fakeSharing = sharing;
+        fakeDrawing = drawing;
+    }
+
+    internal void ClearFixture()
+    {
+        fakeSharing = null;
+        fakeDrawing = null;
+    }
+
     /// How many friends are currently being drawn.
-    public int Drawn => claims.Count;
+    public int Drawn => claims.Count + (fakeDrawing?.Count ?? 0);
+
+    /// Whether this particular friend's glamour is on screen right now.
+    public bool IsDrawing(string characterKey) =>
+        claims.ContainsKey(characterKey) || (fakeDrawing?.Contains(characterKey) ?? false);
+
+    /// Whether the relay is holding a look for this friend at all.
+    public bool IsSharing(string characterKey) =>
+        looks.ContainsKey(characterKey) || (fakeSharing?.Contains(characterKey) ?? false);
+
+    /// How many friends are sharing a look right now, drawn or not.
+    public int SharingNow => looks.Count + (fakeSharing?.Count ?? 0);
 
 
     /// Called from the framework update, after the Wardrobe has had its say about the local character - so
@@ -99,6 +129,10 @@ public sealed class LookSharing : IDisposable
         {
             ReleaseAll();
             publishedStamp = string.Empty;
+
+            if (looks.Count > 0)
+                looks = new Dictionary<string, SharedLook>(StringComparer.OrdinalIgnoreCase);
+
             return;
         }
 
@@ -204,8 +238,12 @@ public sealed class LookSharing : IDisposable
 
                 foreach (var look in page.Looks)
                 {
-                    if (look.Character.Length > 0)
-                        fresh[look.Character] = look;
+                    if (look.Character.Length == 0)
+                        continue;
+
+                    fresh[look.Character] = look;
+
+                    plugin.Friendships.NoteSeen(look.Character);
                 }
 
                 looks = fresh;

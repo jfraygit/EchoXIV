@@ -3,13 +3,20 @@ using System.Numerics;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Interface;
 using Dalamud.Interface.ManagedFontAtlas;
+using EchoGlam.UI.Foundation;
 
 namespace EchoGlam.UI.Controls;
 
-/// The suite's button: a dark body, an accent ring, a slight press-in and a soft shadow.
+/// The suite's button: a raised body, a thread of light along its top edge, and a press-in.
 public static class EchoButton
 {
-    private const float RoundingDesign = 7f;
+    private const float RoundingDesign = 6f;
+
+    /// How far a lit button's halo carries beyond its own box, in design pixels.
+    public const float GlowReachDesign = 7.8f;
+
+    /// The same, in real pixels.
+    public static float GlowReach => GlowReachDesign * UiHelpers.Scale;
 
     /// Breathing room around a button's label, added to the measured content to get the floor below.
     private static Vector2 Padding => new Vector2(14f, 4f) * UiHelpers.Scale;
@@ -66,55 +73,66 @@ public static class EchoButton
         if (hovered && !string.IsNullOrEmpty(tooltip))
             UiHelpers.WrappedTooltip(tooltip);
 
-        var pressOffset = active ? 1.5f * scale : 0f;
+        var pressOffset = active ? 1f * scale : 0f;
         var faceMin = pos + new Vector2(0f, pressOffset);
         var faceMax = faceMin + size;
         var faceCenter = faceMin + (size / 2f);
 
-        var shadowScale = active ? 0.4f : 1f;
-        for (var i = 2; i >= 1; i--)
-        {
-            var offset = new Vector2(0f, i * 1.2f * scale * shadowScale);
-            drawList.AddRectFilled(
-                pos + offset, pos + size + offset, ImGui.GetColorU32(new Vector4(0, 0, 0, 0.06f * i)), rounding);
-        }
-
         var filled = active || selected || (primary && enabled);
 
-        var body = filled
-            ? primary && !active && enabled ? Vector4.Lerp(accent, Vector4.One, hovered ? 0.18f : 0.04f) : accent
-            : hovered
-                ? Vector4.Lerp(Theme.Panel, accent, 0.18f)
-                : Theme.Panel;
-
-        if (!enabled)
-            body = Theme.Panel;
+        var body = !enabled
+            ? Col.Surface
+            : primary
+                ? Vector4.Lerp(accent, Vector4.One, active ? 0f : hovered ? 0.14f : 0.04f)
+                : selected || active
+                    ? Vector4.Lerp(Col.Raised, accent, 0.18f)
+                    : hovered
+                        ? Col.RaisedHigh
+                        : Col.Raised;
 
         if (primary && enabled)
+            Elev.Glow(drawList, faceMin, faceMax, accent, hovered ? 0.42f : 0.27f, rounding, GlowReachDesign);
+        else if (selected && enabled)
+            Elev.Glow(drawList, faceMin, faceMax, accent, 0.12f, rounding, 4.4f);
+
+        if (!active)
+            Elev.Shadow(drawList, faceMin, faceMax, Elev.Block, rounding);
+
+        drawList.AddRectFilled(faceMin, faceMax, Col.U32(body), rounding);
+
+        if (!primary || !enabled)
         {
-            for (var i = 3; i >= 1; i--)
-            {
-                var spread = i * 2.4f * scale;
-                drawList.AddRectFilled(
-                    faceMin - new Vector2(spread, spread * 0.4f),
-                    faceMax + new Vector2(spread, spread),
-                    ImGui.GetColorU32(accent with { W = hovered ? 0.09f : 0.055f }),
-                    rounding + spread);
-            }
+            drawList.AddLine(
+                new Vector2(faceMin.X + rounding, faceMin.Y + (Stroke.Hair / 2f)),
+                new Vector2(faceMax.X - rounding, faceMin.Y + (Stroke.Hair / 2f)),
+                Col.U32(new Vector4(1f, 1f, 1f, enabled ? 0.08f : 0.03f)),
+                Stroke.Hair);
         }
 
-        drawList.AddRectFilled(faceMin, faceMax, ImGui.GetColorU32(body), rounding);
+        var edge = !enabled
+            ? Col.EdgeRest with { W = 0.25f }
+            : selected || active
+                ? accent with { W = 0.85f }
+                : hovered
+                    ? Col.EdgeHover
+                    : Col.EdgeRest with { W = 0.6f };
 
-        var ringAlpha = !enabled ? 0.25f : active || hovered || selected ? 1f : 0.7f;
-        drawList.AddRect(
-            faceMin, faceMax, ImGui.GetColorU32(new Vector4(accent.X, accent.Y, accent.Z, ringAlpha)),
-            rounding, ImDrawFlags.None, 1.5f * scale);
+        if (!primary || !enabled)
+        {
+            drawList.AddRect(
+                faceMin, faceMax, Col.U32(edge), rounding, ImDrawFlags.None,
+                selected || active ? Stroke.Edge : Stroke.Hair);
+        }
 
         var contentColor = !enabled
-            ? Theme.TextDisabled
-            : filled
+            ? Col.TextMuted
+            : primary
                 ? Theme.Background
-                : accent;
+                : selected || active
+                    ? accent
+                    : hovered
+                        ? Col.Text
+                        : Col.TextDim;
 
         DrawContent(drawList, faceCenter, label, iconFont, icon, ImGui.GetColorU32(contentColor));
         return clicked;

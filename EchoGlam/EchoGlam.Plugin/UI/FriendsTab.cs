@@ -2,11 +2,14 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Numerics;
+using System.Threading;
+using System.Threading.Tasks;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Interface;
 using EchoGlam.Game;
 using EchoGlam.Shared;
 using EchoGlam.UI.Controls;
+using EchoGlam.UI.Foundation;
 
 namespace EchoGlam.UI;
 
@@ -17,474 +20,989 @@ public sealed class FriendsTab
 
     private string search = string.Empty;
 
-    /// Which friend's row is showing its confirm-remove state, by id.
+    /// Which friend's card is showing its confirm-remove state, by id.
     private string confirming = string.Empty;
+
+    /// Which of the two views the grid is showing: the people you know, or the people you have asked.
+    private bool showingWaiting;
 
     public FriendsTab(Plugin plugin) => this.plugin = plugin;
 
     private Friendships Friendships => plugin.Friendships;
 
+    private LookSharing Looks => plugin.Looks;
+
+    /// Raised with a board profile id when somebody's card is clicked, so the window can show their page
+    /// where other people's pages are shown.
+    public event Action<string>? OpenProfile;
+
+
+    /// Radius of the status lamp's core.
+    private const float LampDesign = 5f;
+
+    /// How far the lamp's halo carries, as a multiple of the core.
+    private const float LampHalo = 2.4f;
+
+    /// How fast the lamp breathes, in radians a second.
+    private const float PulseSpeed = 1.6f;
+
+
+    /// Air kept clear at the right-hand end of a band, on top of the halo - see the note where the halo is
+    /// deducted.
+    private const float GutterDesign = 16f;
+
+    /// A person's monogram on a card.
+    private const float DiscDesign = 40f;
+
+    /// The same, in the requests band, where the row is shorter.
+    private const float RequestDiscDesign = 34f;
+
+    /// One row of the requests band.
+    private const float RequestRowDesign = 44f;
+
+    /// How many requests the band shows before it starts counting the rest.
+    private const int RequestsShown = 3;
+
+    /// Narrowest a person card may be.
+    private const float CardDesign = 232f;
+
+    /// How long a list has to be before a search field earns its place in the view band.
+    private const int SearchFrom = 6;
+
+    private const float SearchDesign = 240f;
+
+    /// How tall a person card is.
+    private static float CardHeight =>
+        (Surface.PadDesign * 2f * UiHelpers.Scale) + (DiscDesign * UiHelpers.Scale) + Sp.Md + ActionRow;
+
+    /// The row along the bottom of a card: a pill at one end, the marks at the other.
+    private static float ActionRow => MathF.Max(Metrics.TouchMin, Pill.Height);
+
+
     public void Draw()
     {
-        var width = ImGui.GetContentRegionAvail().X;
-        var scale = UiHelpers.Scale;
-
-        DrawSharingPanel(width);
-        ImGui.Dummy(new Vector2(0f, 10f * scale));
-
-        if (!Friendships.SharingEnabled && Friendships.Friends.Count == 0)
+        if (landed is { } found)
         {
-            DrawOffState(width);
+            landed = null;
+            looking = null;
+
+            if (found.ProfileId is { } id)
+            {
+                profiles[found.Character] = id;
+                notice = Message.None;
+                OpenProfile?.Invoke(id);
+            }
+            else if (found.Failed)
+            {
+                notice = Message.Failed("Couldn't reach the board to look for their profile.");
+            }
+            else
+            {
+                profiles[found.Character] = null;
+                notice = Missing(found.Character);
+            }
+        }
+
+        var halo = EchoButton.GlowReach;
+
+        var available = ImGui.GetContentRegionAvail() - new Vector2(halo, halo);
+        var origin = ImGui.GetCursorScreenPos();
+
+        var status = DrawStatus(available.X);
+
+        if (!Friendships.SharingEnabled
+            && Friendships.Friends.Count == 0
+            && Friendships.Incoming.Count == 0
+            && Friendships.Outgoing.Count == 0)
+        {
+            ImGui.SetCursorScreenPos(new Vector2(origin.X, origin.Y + status));
+
+            Notice.Empty(
+                available.X, FontAwesomeIcon.UserFriends,
+                "Friends see what you're wearing",
+                "And you see theirs. Nobody else does, and nobody can look you up until you turn "
+                + "sharing on. Then right-click somebody in game and choose Add EchoGlam Friend.");
+
             return;
         }
 
-        if (Friendships.Incoming.Count > 0)
-        {
-            DrawRequestsPanel(width);
-            ImGui.Dummy(new Vector2(0f, 10f * scale));
-        }
+        ImGui.SetCursorScreenPos(new Vector2(origin.X, origin.Y + status));
+        var requests = DrawRequests(available.X);
 
-        DrawFriendsPanel(width);
+        ImGui.SetCursorScreenPos(new Vector2(origin.X, origin.Y + status + requests));
+        var band = DrawViewBand(available.X);
 
-        if (Friendships.Outgoing.Count > 0)
-        {
-            ImGui.Dummy(new Vector2(0f, 10f * scale));
-            DrawOutgoingPanel(width);
-        }
+        var consumed = status + requests + band;
+
+        ImGui.SetCursorScreenPos(new Vector2(origin.X, origin.Y + consumed));
+
+        DrawPeople(available.X, MathF.Max(Metrics.RowTall * 2f, available.Y - consumed));
     }
 
 
-    private void DrawSharingPanel(float width)
+    /// What is true right now, what it means, and the switch.
+    private float DrawStatus(float width)
     {
+        var drawList = ImGui.GetWindowDrawList();
+        var origin = ImGui.GetCursorScreenPos();
         var scale = UiHelpers.Scale;
 
-        Theme.BeginPanel(width);
-
-        var inner = width - (28f * scale);
         var sharing = Friendships.SharingEnabled;
+        var lamp = LampDesign * scale;
 
-        Theme.SectionHeader("Glamour Sharing", ruleWidth: inner);
-        ImGui.Dummy(new Vector2(0f, 6f * scale));
+        var block = (Text.DisplaySize * 1.2f) + (Text.CaptionSize * 1.45f);
+        var row = MathF.Max(block, Metrics.RowTall);
+        var right = origin.X + width - (GutterDesign * scale);
 
-        var wasSharing = sharing;
+
+        const string label = "Share";
+
+        var toggle = EchoToggle.Width(label);
+
+        ImGui.SetCursorScreenPos(
+            new Vector2(right - toggle, origin.Y + ((row - EchoToggle.Height) / 2f)));
+
+        var wanted = sharing;
 
         if (EchoToggle.Draw(
-                "##echoglamsharing",
-                sharing ? "Sharing On" : "Sharing Off",
-                ref sharing,
+                "##echoglamsharing", label, ref wanted,
                 "Friends see the glamours you wear, and you see theirs. Nobody else does. "
                 + "Turning this off pauses it - it doesn't remove your friends.")
-            && sharing != wasSharing)
+            && wanted != sharing)
         {
-            Friendships.SetSharing(sharing);
+            Friendships.SetSharing(wanted);
             confirming = string.Empty;
         }
 
-        ImGui.Dummy(new Vector2(0f, 4f * scale));
+        right -= toggle + Sp.Xxl;
 
-        ImGui.PushStyleColor(ImGuiCol.Text, Theme.TextDisabled);
-        ImGui.PushTextWrapPos(ImGui.GetCursorPosX() + inner);
+        var drawn = Looks.Drawn;
+        var publishing = Looks.SharingNow;
 
-        ImGui.TextUnformatted(Friendships.SharingEnabled
-            ? "Right-click somebody in game and choose Add EchoGlam Friend."
-            : "Nobody can look you up while this is off. Your friends are kept.");
+        MetaCell[] counts =
+        [
+            new MetaCell(
+                "Friends", Friendships.Friends.Count.ToString(),
+                Tooltip: "People you have both agreed to share with."),
+            new MetaCell(
+                "Sharing", publishing.ToString(),
+                publishing > 0 ? Theme.Accent : Col.TextMuted,
+                "Friends the relay is holding a look for: logged in with sharing on, whether or "
+                + "not they're in front of you."),
+            new MetaCell(
+                "On Screen", drawn.ToString(),
+                drawn > 0 ? Col.Success : Col.TextMuted,
+                "Friends whose glamour EchoGlam is drawing for you this second."),
+        ];
 
-        ImGui.PopTextWrapPos();
-        ImGui.PopStyleColor();
+        var tiles = Meta.Width(counts);
 
-        if (Friendships.SharingEnabled && plugin.Looks.Drawn > 0)
+        ImGui.SetCursorScreenPos(
+            new Vector2(right - tiles, origin.Y + ((row - Meta.TileHeight) / 2f)));
+
+        Meta.Tiles(tiles, counts);
+
+        right -= tiles + Sp.Xxl;
+
+
+        var reach = lamp * LampHalo;
+        var centre = new Vector2(origin.X + reach, 0f);
+
+        var textLeft = centre.X + lamp + Sp.Md;
+        var room = MathF.Max(Sp.Xxxl, right - textLeft);
+        var textTop = origin.Y + ((row - block) / 2f);
+        var headlineHeight = Text.DisplaySize * 1.2f;
+
+        var tone = sharing ? Col.Success : Col.TextMuted;
+
+        using (Text.PushDisplay())
         {
-            ImGui.Dummy(new Vector2(0f, 6f * scale));
+            var headline = Text.Truncate(sharing ? "Sharing Is On" : "Sharing Is Off", room);
 
-            var drawn = plugin.Looks.Drawn;
+            drawList.AddText(new Vector2(textLeft, textTop), Col.U32(Col.Text), headline);
 
-            ImGui.PushStyleColor(ImGuiCol.Text, Theme.Good);
-            ImGui.TextUnformatted(drawn == 1
-                ? "Wearing 1 friend's glamour on screen."
-                : $"Wearing {drawn} friends' glamours on screen.");
-            ImGui.PopStyleColor();
+            centre.Y = textTop + (ImGui.GetTextLineHeight() / 2f);
         }
 
-        if (Friendships.Message.Length > 0)
-        {
-            ImGui.Dummy(new Vector2(0f, 6f * scale));
+        var pulse = sharing
+            ? 0.5f + (0.5f * MathF.Sin((float)ImGui.GetTime() * PulseSpeed))
+            : 0f;
 
-            ImGui.PushStyleColor(ImGuiCol.Text, Friendships.Failed ? Theme.Bad : Theme.Good);
-            ImGui.PushTextWrapPos(ImGui.GetCursorPosX() + inner);
-            ImGui.TextUnformatted(Friendships.Message);
-            ImGui.PopTextWrapPos();
-            ImGui.PopStyleColor();
+        for (var ring = 3; ring >= 1; ring--)
+        {
+            drawList.AddCircleFilled(
+                centre,
+                lamp * (1f + (ring * 0.4f * (sharing ? 0.8f + (0.35f * pulse) : 1f))),
+                Col.U32(tone with { W = sharing ? 0.05f + (0.05f * pulse) : 0.03f }), 24);
         }
 
-        Theme.EndPanel();
-    }
+        drawList.AddCircleFilled(centre, lamp, Col.U32(tone), 24);
 
-    /// What the page says when sharing has never been turned on.
-    private void DrawOffState(float width)
-    {
-        var scale = UiHelpers.Scale;
-
-        Theme.BeginPanel(width);
-
-        var inner = width - (28f * scale);
-
-        ImGui.Dummy(new Vector2(0f, 8f * scale));
-
-        var center = ImGui.GetCursorScreenPos() + new Vector2(inner / 2f, 16f * scale);
-        UiHelpers.DrawScaledIcon(
-            ImGui.GetWindowDrawList(), FontAwesomeIcon.UserFriends, center,
-            ImGui.GetColorU32(Theme.TextDisabled));
-
-        ImGui.Dummy(new Vector2(0f, 44f * scale));
-
-        Centred("Sharing Off", Theme.Text, inner);
-        ImGui.Dummy(new Vector2(0f, 4f * scale));
-        Centred("Turn it on to add friends and see what they're wearing.", Theme.TextDisabled, inner);
-
-        ImGui.Dummy(new Vector2(0f, 10f * scale));
-
-        Theme.EndPanel();
-    }
-
-
-    private void DrawRequestsPanel(float width)
-    {
-        var scale = UiHelpers.Scale;
-
-        Theme.BeginPanel(width, Theme.Accent);
-
-        var inner = width - (28f * scale);
-
-        Theme.SectionHeader($"Requests ({Friendships.Incoming.Count})", ruleWidth: inner);
-        ImGui.Dummy(new Vector2(0f, 6f * scale));
-
-        foreach (var entry in Friendships.Incoming.ToList())
+        using (Text.PushCaption())
         {
-            DrawRequestRow(entry, inner);
-            ImGui.Dummy(new Vector2(0f, 4f * scale));
+            drawList.AddText(
+                new Vector2(textLeft, textTop + headlineHeight), Col.U32(Col.TextDim),
+                Text.Truncate(
+                    sharing
+                        ? "Right-click somebody in game and choose Add EchoGlam Friend."
+                        : "Nobody can look you up while this is off. Your friends are kept.",
+                    room));
         }
 
-        Theme.EndPanel();
-    }
+        var bottom = origin.Y + row + DrawRelayMessage(drawList, origin, width, origin.Y + row);
 
-    private void DrawRequestRow(FriendEntry entry, float width)
-    {
-        var scale = UiHelpers.Scale;
-        var rowHeight = 46f * scale;
-        var padX = 10f * scale;
-        var gap = 6f * scale;
+        var ruleY = bottom + Sp.Lg;
 
-        var origin = ImGui.GetCursorScreenPos();
-        var drawList = ImGui.GetWindowDrawList();
-
-        ImGui.InvisibleButton($"##req{entry.Id}", new Vector2(width, rowHeight), ImGuiButtonFlags.MouseButtonLeft);
-        ImGui.SetItemAllowOverlap();
-
-        var min = origin;
-        var max = origin + new Vector2(width, rowHeight);
-        var rounding = 8f * scale;
-
-        drawList.AddRectFilled(min, max, ImGui.GetColorU32(Theme.Tinted(0.07f)), rounding);
         drawList.AddRectFilled(
-            min, new Vector2(min.X + (3f * scale), max.Y),
-            ImGui.GetColorU32(Theme.Accent), rounding, ImDrawFlags.RoundCornersLeft);
+            new Vector2(origin.X, ruleY), new Vector2(origin.X + width, ruleY + Stroke.Hair),
+            Col.U32(Col.EdgeRest with { W = 0.55f }));
 
-        var buttonHeight = 26f * scale;
-        var buttonY = origin.Y + ((rowHeight - buttonHeight) / 2f);
+        ImGui.SetCursorScreenPos(origin);
+        ImGui.Dummy(new Vector2(width, row));
 
-        var declineWidth = EchoButton.ContentSize("Decline").X + (8f * scale);
-        var acceptWidth = EchoButton.ContentSize("Accept").X + (8f * scale);
+        return ruleY + Stroke.Hair + Sp.Lg - origin.Y;
+    }
 
-        var x = origin.X + width - declineWidth - padX;
+    /// The last thing the relay said, with a way to put it away.
+    private float DrawRelayMessage(ImDrawListPtr drawList, Vector2 origin, float width, float top)
+    {
+        var live = notice.Any
+            ? notice
+            : Friendships.Message.Length > 0
+                ? Friendships.Failed
+                    ? Message.Failed(Friendships.Message)
+                    : Message.Ok(Friendships.Message)
+                : Message.None;
 
-        ImGui.SetCursorScreenPos(new Vector2(x, buttonY));
+        if (live.Any)
+            held = live;
 
-        if (EchoButton.Draw(
-                $"##reqno{entry.Id}", "Decline", new Vector2(declineWidth, buttonHeight),
-                enabled: !Friendships.Busy, tooltip: "They aren't told, and they can ask again."))
+        var mark = Metrics.TouchMin;
+        var full = Sp.Sm + mark;
+
+        var shown = Motion.Toward("friendsmessage", live.Any, 16f);
+
+        if (shown <= 0.002f || !held.Any)
+            return 0f;
+
+        var height = full * shown;
+        var y = top + (Sp.Sm * shown);
+
+        drawList.PushClipRect(
+            new Vector2(origin.X, top), new Vector2(origin.X + width, top + height), true);
+
+        float textWidth;
+
+        using (Text.PushCaption())
         {
-            Friendships.Answer(entry.Id, accept: false);
+            var text = Text.Truncate(held.Text, MathF.Max(Sp.Xxxl, width - mark - Sp.Md));
+            textWidth = Text.Width(text);
+
+            drawList.AddText(
+                new Vector2(origin.X, y + ((mark - Text.CaptionSize) / 2f)),
+                Col.U32(held.Colour with { W = held.Colour.W * shown }), text);
         }
 
-        x -= acceptWidth + gap;
+        drawList.PopClipRect();
 
-        ImGui.SetCursorScreenPos(new Vector2(x, buttonY));
+        if (shown < 0.92f)
+            return height;
+
+        var cursor = ImGui.GetCursorScreenPos();
+
+        ImGui.SetCursorScreenPos(new Vector2(origin.X + textWidth + Sp.Xs, y));
+
+        if (EchoButton.BareIcon(
+                "##dropfriendmessage", plugin.Fonts.Icon, FontAwesomeIcon.Times, mark,
+                "Put this away.", colourOverride: Col.TextMuted))
+        {
+            notice = Message.None;
+            Friendships.ClearMessage();
+        }
+
+        ImGui.SetCursorScreenPos(cursor);
+
+        return height;
+    }
+
+    /// Something this page itself has to say, as opposed to something the relay said.
+    private Message notice = Message.None;
+
+    /// Whichever of the two was last showing, kept so the line has something to draw while it eases shut.
+    private Message held = Message.None;
+
+
+    /// Who has asked, above everything else, and only when somebody has.
+    private float DrawRequests(float width)
+    {
+        if (Friendships.Incoming.Count == 0)
+            return 0f;
+
+        var drawList = ImGui.GetWindowDrawList();
+        var origin = ImGui.GetCursorScreenPos();
+        var scale = UiHelpers.Scale;
+        var pad = Surface.PadDesign * scale;
+
+        var list = Friendships.Incoming.ToList();
+        var shown = Math.Min(list.Count, RequestsShown);
+        var overflow = list.Count - shown;
+
+        var head = Text.CaptionSize * 1.15f;
+        var rowHeight = RequestRowDesign * scale;
+
+        var height = pad + head + Sp.Md
+                     + (shown * rowHeight) + ((shown - 1) * Sp.Xs)
+                     + (overflow > 0 ? Sp.Sm + head : 0f)
+                     + pad;
+
+        var size = new Vector2(width, height);
+
+        Surface.Paint(origin, size, SurfaceKind.Card, Theme.Accent, inside: true);
+
+        using (Text.PushCaption())
+        {
+            Text.Tracked(
+                drawList, new Vector2(origin.X + pad, origin.Y + pad),
+                list.Count == 1
+                    ? "SOMEBODY WANTS TO BE FRIENDS"
+                    : $"{list.Count} PEOPLE WANT TO BE FRIENDS",
+                Col.U32(Theme.Accent), 1.8f, width - (pad * 2f));
+        }
+
+        var y = origin.Y + pad + head + Sp.Md;
+
+        for (var i = 0; i < shown; i++)
+        {
+            DrawRequestRow(
+                drawList, list[i], new Vector2(origin.X + pad, y), width - (pad * 2f), rowHeight);
+
+            y += rowHeight + Sp.Xs;
+        }
+
+        if (overflow > 0)
+        {
+            using (Text.PushCaption())
+            {
+                drawList.AddText(
+                    new Vector2(origin.X + pad, y - Sp.Xs + Sp.Sm), Col.U32(Col.TextMuted),
+                    Text.Truncate(
+                        overflow == 1
+                            ? "One more waiting. Answer these and it moves up."
+                            : $"{overflow} more waiting. Answer these and they move up.",
+                        width - (pad * 2f)));
+            }
+        }
+
+        ImGui.SetCursorScreenPos(origin);
+        ImGui.Dummy(size);
+
+        return height + Sp.Xl;
+    }
+
+    private void DrawRequestRow(
+        ImDrawListPtr drawList, FriendEntry entry, Vector2 min, float width, float height)
+    {
+        var disc = RequestDiscDesign * UiHelpers.Scale;
+        var right = min.X + width;
+
+        var accept = EchoButton.ContentSize("Accept").X;
+        var decline = EchoButton.ContentSize("Decline").X;
+        var buttons = accept + Sp.Sm + decline;
+
+        var cursor = ImGui.GetCursorScreenPos();
+
+        ImGui.SetCursorScreenPos(
+            new Vector2(right - buttons, min.Y + ((height - Metrics.Row) / 2f)));
 
         if (EchoButton.Draw(
-                $"##reqyes{entry.Id}", "Accept", new Vector2(acceptWidth, buttonHeight),
+                $"##reqyes{entry.Id}", "Accept", new Vector2(accept, Metrics.Row),
                 enabled: !Friendships.Busy, primary: true,
                 tooltip: "You'll see each other's glamours."))
-        {
             Friendships.Answer(entry.Id, accept: true);
-        }
 
-        var textWidth = MathF.Max(0f, x - origin.X - padX - gap);
-        DrawTwoLines(
-            drawList, origin + new Vector2(padX, 0f), rowHeight, textWidth,
-            Name(entry.Character), $"{World(entry.Character)} - asked to be friends");
+        ImGui.SameLine(0f, Sp.Sm);
 
-        ImGui.SetCursorScreenPos(new Vector2(origin.X, origin.Y + rowHeight));
+        if (EchoButton.Draw(
+                $"##reqno{entry.Id}", "Decline", new Vector2(decline, Metrics.Row),
+                enabled: !Friendships.Busy,
+                tooltip: "They aren't told, and they can ask again."))
+            Friendships.Answer(entry.Id, accept: false);
+
+        ImGui.SetCursorScreenPos(cursor);
+
+        var name = Name(entry.Character);
+
+        Avatar.Draw(
+            drawList, null, null, name,
+            new Vector2(min.X, min.Y + ((height - disc) / 2f)), disc);
+
+        var textLeft = min.X + disc + Sp.Lg;
+
+        TwoLines(
+            drawList, new Vector2(textLeft, min.Y), height, name, World(entry.Character),
+            MathF.Max(Sp.Xl, right - buttons - Sp.Lg - textLeft));
     }
 
 
-    private void DrawFriendsPanel(float width)
+    /// Which list, how long it is, and a way to search it.
+    private float DrawViewBand(float width)
     {
-        var scale = UiHelpers.Scale;
+        var drawList = ImGui.GetWindowDrawList();
+        var origin = ImGui.GetCursorScreenPos();
 
-        Theme.BeginPanel(width);
+        var row = MathF.Max(Metrics.Row, Metrics.Field);
 
-        var inner = width - (28f * scale);
-        var friends = Friendships.Friends;
+        ReadOnlySpan<string> views = ["Friends", "Waiting"];
 
-        Theme.SectionHeader($"Friends ({friends.Count})", ruleWidth: inner);
-        ImGui.Dummy(new Vector2(0f, 8f * scale));
+        ImGui.SetCursorScreenPos(origin);
 
-        if (friends.Count > 6)
+        var waiting = EchoSegment.Draw(
+            "##friendviews", views, showingWaiting ? 1 : 0, row,
+            [
+                "People you have both agreed to share with.",
+                "Requests you have sent that nobody has answered yet.",
+            ]) == 1;
+
+        if (waiting != showingWaiting)
         {
+            showingWaiting = waiting;
+
+            search = string.Empty;
+            confirming = string.Empty;
+        }
+
+        var all = Listed();
+
+        var searchable = all.Count > SearchFrom;
+
+        if (!searchable && search.Length > 0)
+            search = string.Empty;
+
+        var searchRight = origin.X;
+
+        if (searchable)
+        {
+            var searchWidth = SearchDesign * UiHelpers.Scale;
+            var left = origin.X + EchoSegment.Width(views) + Sp.Xxl;
+            var cursor = ImGui.GetCursorScreenPos();
+
+            ImGui.SetCursorScreenPos(new Vector2(left, origin.Y + ((row - Metrics.Field) / 2f)));
+
             UiHelpers.SearchField(
-                "##friendsearch", "Search friends", ref search, inner, 28f * scale, plugin.Fonts.Icon);
+                "##friendsearch", showingWaiting ? "Search Requests" : "Search Friends",
+                ref search, searchWidth, Metrics.Field, plugin.Fonts.Icon);
 
-            ImGui.Dummy(new Vector2(0f, 8f * scale));
+            ImGui.SetCursorScreenPos(cursor);
+
+            searchRight = left + searchWidth;
         }
 
-        var shown = friends
-            .Where(f => search.Length == 0
-                        || f.Character.Contains(search, StringComparison.OrdinalIgnoreCase))
-            .OrderBy(f => f.Character, StringComparer.OrdinalIgnoreCase)
-            .ToList();
+        var total = all.Count;
+        var visible = Shown().Count;
+        var noun = showingWaiting ? "Waiting" : total == 1 ? "Friend" : "Friends";
 
-        if (friends.Count == 0)
+        var count = total == 0
+            ? string.Empty
+            : visible == total
+                ? $"{total} {noun}"
+                : $"{visible} of {total}";
+
+        if (count.Length > 0)
         {
-            ImGui.PushStyleColor(ImGuiCol.Text, Theme.TextDisabled);
-            ImGui.PushTextWrapPos(ImGui.GetCursorPosX() + inner);
+            using (Text.PushCaption())
+            {
+                var measured = Text.Width(count);
 
-            ImGui.TextUnformatted(Friendships.Synced
-                ? "No friends yet. Right-click somebody in game and choose Add EchoGlam Friend."
-                : "Checking...");
-
-            ImGui.PopTextWrapPos();
-            ImGui.PopStyleColor();
-        }
-        else if (shown.Count == 0)
-        {
-            ImGui.PushStyleColor(ImGuiCol.Text, Theme.TextDisabled);
-            ImGui.TextUnformatted("Nobody matches that.");
-            ImGui.PopStyleColor();
+                drawList.AddText(
+                    new Vector2(
+                        origin.X + width - measured,
+                        origin.Y + ((row - Text.CaptionSize) / 2f)),
+                    Col.U32(Col.TextMuted with { W = 0.75f }),
+                    Text.Truncate(
+                        count, MathF.Max(0f, origin.X + width - Sp.Lg - searchRight)));
+            }
         }
 
-        foreach (var entry in shown)
-        {
-            DrawFriendRow(entry, inner);
-            ImGui.Dummy(new Vector2(0f, 4f * scale));
-        }
+        var ruleY = origin.Y + row + Sp.Md;
 
-        Theme.EndPanel();
+        drawList.AddRectFilled(
+            new Vector2(origin.X, ruleY), new Vector2(origin.X + width, ruleY + Stroke.Hair),
+            Col.U32(Col.EdgeRest with { W = 0.55f }));
+
+        ImGui.SetCursorScreenPos(origin);
+        ImGui.Dummy(new Vector2(width, row));
+
+        return ruleY + Stroke.Hair + Sp.Lg - origin.Y;
     }
 
-    private void DrawFriendRow(FriendEntry entry, float width)
+
+    private IReadOnlyList<FriendEntry> Listed() =>
+        showingWaiting ? Friendships.Outgoing : Friendships.Friends;
+
+    /// The active list, filtered and sorted.
+    private List<FriendEntry> Shown()
     {
+        var frame = ImGui.GetFrameCount();
+
+        if (shownFrame == frame && shownWaiting == showingWaiting)
+            return shown;
+
+        shownFrame = frame;
+        shownWaiting = showingWaiting;
+
+        if (confirming.Length == 0)
+            promotedWhenArmed = null;
+        else
+            promotedWhenArmed ??= Captured();
+
+        var held = promotedWhenArmed;
+
+        shown =
+        [
+            .. Listed()
+                .Where(entry => search.Length == 0
+                                || entry.Character.Contains(search, StringComparison.OrdinalIgnoreCase))
+
+                .OrderByDescending(entry => held is null
+                    ? Looks.IsDrawing(entry.Character)
+                    : held.Contains(entry.Character))
+                .ThenBy(entry => entry.Character, StringComparer.OrdinalIgnoreCase),
+        ];
+
+        return shown;
+    }
+
+    /// Who is on screen right now, as a set that will not change under a confirmation.
+    private HashSet<string> Captured()
+    {
+        var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var entry in Listed())
+        {
+            if (Looks.IsDrawing(entry.Character))
+                set.Add(entry.Character);
+        }
+
+        return set;
+    }
+
+    /// The promoted set as it stood when a removal was armed, or null when nothing is armed.
+    private HashSet<string>? promotedWhenArmed;
+
+    private int shownFrame = -1;
+    private bool shownWaiting;
+    private List<FriendEntry> shown = [];
+
+    /// The grid.
+    private void DrawPeople(float width, float height)
+    {
+        ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, Vector2.Zero);
+        var open = ImGui.BeginChild("##friendlist", new Vector2(width, height), false);
+        ImGui.PopStyleVar();
+
+        if (open)
+        {
+            var list = Shown();
+
+            if (list.Count == 0)
+                DrawNothing(ImGui.GetContentRegionAvail().X);
+            else
+                DrawGrid(list);
+        }
+
+        ImGui.EndChild();
+    }
+
+    /// A GRID OF PEOPLE, NOT A COLUMN OF LINES.
+    private void DrawGrid(List<FriendEntry> list)
+    {
+        var gap = Sp.Lg;
         var scale = UiHelpers.Scale;
-        var rowHeight = 46f * scale;
-        var padX = 10f * scale;
-        var gap = 6f * scale;
-        var iconWidth = 24f * scale;
+
+        var width = ImGui.GetContentRegionAvail().X;
+
+        var (columns, cardWidth) = Layout.Fit(width, CardDesign * scale, gap);
+        var cardHeight = CardHeight;
+        var size = new Vector2(cardWidth, cardHeight);
+
+        var rows = (list.Count + columns - 1) / columns;
+        var total = (rows * (cardHeight + gap)) - gap;
 
         var origin = ImGui.GetCursorScreenPos();
         var drawList = ImGui.GetWindowDrawList();
 
-        ImGui.InvisibleButton($"##friend{entry.Id}", new Vector2(width, rowHeight), ImGuiButtonFlags.MouseButtonLeft);
+        ImGui.Dummy(new Vector2(width, total));
 
-        var hovered = ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenBlockedByActiveItem);
-        ImGui.SetItemAllowOverlap();
-
-        var blocked = Friendships.IsBlocked(entry.Character);
-        var confirm = string.Equals(confirming, entry.Id, StringComparison.Ordinal);
-
-        var min = origin;
-        var max = origin + new Vector2(width, rowHeight);
-        var rounding = 8f * scale;
-
-        var fill = confirm
-            ? Vector4.Lerp(Theme.Panel, Theme.Bad, 0.16f)
-            : hovered
-                ? Theme.Tinted(0.13f)
-                : Theme.Tinted(0.035f);
-
-        drawList.AddRectFilled(min, max, ImGui.GetColorU32(fill), rounding);
-
-        if (hovered || confirm)
+        for (var i = 0; i < list.Count; i++)
         {
-            drawList.AddRect(
-                min, max, ImGui.GetColorU32(confirm ? Theme.Bad with { W = 0.6f } : Theme.Border),
-                rounding, ImDrawFlags.None, 1.2f * scale);
+            var min = origin + new Vector2(
+                (i % columns) * (cardWidth + gap),
+                (i / columns) * (cardHeight + gap));
+
+            if (showingWaiting)
+                DrawWaitingCard(drawList, list[i], min, size);
+            else
+                DrawFriendCard(drawList, list[i], min, size);
         }
 
-        var buttonHeight = 24f * scale;
-        var buttonY = origin.Y + ((rowHeight - buttonHeight) / 2f);
-        var x = origin.X + width - padX;
+        ImGui.SetCursorScreenPos(new Vector2(origin.X, origin.Y + total));
+    }
+
+    /// One friend.
+    private void DrawFriendCard(
+        ImDrawListPtr drawList, FriendEntry entry, Vector2 min, Vector2 size)
+    {
+        var blocked = Friendships.IsBlocked(entry.Character);
+        var confirm = string.Equals(confirming, entry.Id, StringComparison.Ordinal);
+        var live = !blocked && Looks.IsDrawing(entry.Character);
+        var sharing = !blocked && Looks.IsSharing(entry.Character);
+
+        var (hovered, clicked) = CardHit($"##friendcard{entry.Id}", min, size);
+
+        if (clicked && !confirm)
+            OpenProfileFor(entry.Character);
+
+        var tone =
+            confirm ? Col.Danger
+            : blocked ? Col.Caution
+            : live ? (hovered ? Vector4.Lerp(Col.Success, Vector4.One, 0.25f) : Col.Success)
+            : hovered ? Theme.Accent
+            : (Vector4?)null;
+
+        Surface.Paint(min, size, SurfaceKind.Card, tone, inside: true);
+
+        var pad = Surface.PadDesign * UiHelpers.Scale;
+        var disc = DiscDesign * UiHelpers.Scale;
+        var right = min.X + size.X - pad;
+        var actionTop = min.Y + pad + disc + Sp.Md;
+        var name = Name(entry.Character);
+
+        Avatar.Draw(drawList, null, null, name, min + new Vector2(pad, pad), disc);
+
+        var textLeft = min.X + pad + disc + Sp.Lg;
+
+        TwoLines(
+            drawList, new Vector2(textLeft, min.Y + pad), disc, name, World(entry.Character),
+            MathF.Max(Sp.Xl, right - textLeft));
 
         if (confirm)
         {
-            var yesWidth = EchoButton.ContentSize("Remove").X + (8f * scale);
-            var noWidth = EchoButton.ContentSize("Keep").X + (8f * scale);
+            var keep = EchoButton.ContentSize("Keep").X;
+            var remove = EchoButton.ContentSize("Remove").X;
+            var buttonY = actionTop + ((ActionRow - Metrics.Row) / 2f);
+            var cursor = ImGui.GetCursorScreenPos();
 
-            x -= noWidth;
-            ImGui.SetCursorScreenPos(new Vector2(x, buttonY));
+            ImGui.SetCursorScreenPos(new Vector2(right - keep, buttonY));
 
-            if (EchoButton.Draw($"##keep{entry.Id}", "Keep", new Vector2(noWidth, buttonHeight)))
+            if (EchoButton.Draw($"##keep{entry.Id}", "Keep", new Vector2(keep, Metrics.Row)))
                 confirming = string.Empty;
 
-            x -= yesWidth + gap;
-            ImGui.SetCursorScreenPos(new Vector2(x, buttonY));
+            ImGui.SetCursorScreenPos(
+                new Vector2(right - keep - Sp.Sm - remove, buttonY));
 
             if (EchoButton.Draw(
-                    $"##rm{entry.Id}", "Remove", new Vector2(yesWidth, buttonHeight),
-                    accentOverride: Theme.Bad,
-                    tooltip: "Ends it for both of you."))
+                    $"##rm{entry.Id}", "Remove", new Vector2(remove, Metrics.Row),
+                    accentOverride: Col.Danger, tooltip: "Ends it for both of you."))
             {
                 Friendships.Remove(entry.Id);
                 confirming = string.Empty;
             }
+
+            ImGui.SetCursorScreenPos(cursor);
+            return;
         }
-        else
+
+        var icon = Metrics.TouchMin;
+        var iconY = actionTop + ((ActionRow - icon) / 2f);
+        var place = ImGui.GetCursorScreenPos();
+
+        ImGui.SetCursorScreenPos(new Vector2(right - icon, iconY));
+
+        if (EchoButton.BareIcon(
+                $"##unfriend{entry.Id}", plugin.Fonts.Icon, FontAwesomeIcon.UserMinus, icon,
+                "Remove this friend.",
+                colourOverride: hovered ? Col.Danger : Col.TextMuted))
+            confirming = entry.Id;
+
+        ImGui.SetCursorScreenPos(new Vector2(right - (icon * 2f) - Sp.Xs, iconY));
+
+        if (EchoButton.BareIcon(
+                $"##block{entry.Id}", plugin.Fonts.Icon,
+                blocked ? FontAwesomeIcon.EyeSlash : FontAwesomeIcon.Eye, icon,
+                blocked
+                    ? "Hidden. Click to see their glamours again."
+                    : "Hide their glamours without unfriending them.",
+                colourOverride: blocked ? Col.Caution : hovered ? Col.Text : Col.TextMuted))
+            Friendships.SetBlocked(entry.Character, !blocked);
+
+        ImGui.SetCursorScreenPos(place);
+
+        var (label, pillTone, tip) = Status(blocked, live, sharing);
+
+        Pill.DrawAt(
+            new Vector2(min.X + pad, actionTop + ((ActionRow - Pill.Height) / 2f)),
+            label, pillTone, tip, Footnote(entry, "Added", live || sharing));
+    }
+
+    /// One request you sent.
+    private void DrawWaitingCard(
+        ImDrawListPtr drawList, FriendEntry entry, Vector2 min, Vector2 size)
+    {
+        var (hovered, clicked) = CardHit($"##waitingcard{entry.Id}", min, size);
+
+        if (clicked)
+            OpenProfileFor(entry.Character);
+
+        Surface.Paint(min, size, SurfaceKind.Card, hovered ? Theme.Accent : null, inside: true);
+
+        var pad = Surface.PadDesign * UiHelpers.Scale;
+        var disc = DiscDesign * UiHelpers.Scale;
+        var right = min.X + size.X - pad;
+        var actionTop = min.Y + pad + disc + Sp.Md;
+        var name = Name(entry.Character);
+
+        Avatar.Draw(drawList, null, null, name, min + new Vector2(pad, pad), disc);
+
+        var textLeft = min.X + pad + disc + Sp.Lg;
+
+        TwoLines(
+            drawList, new Vector2(textLeft, min.Y + pad), disc, name, World(entry.Character),
+            MathF.Max(Sp.Xl, right - textLeft));
+
+        var icon = Metrics.TouchMin;
+        var place = ImGui.GetCursorScreenPos();
+
+        ImGui.SetCursorScreenPos(
+            new Vector2(right - icon, actionTop + ((ActionRow - icon) / 2f)));
+
+        if (EchoButton.BareIcon(
+                $"##withdraw{entry.Id}", plugin.Fonts.Icon, FontAwesomeIcon.Times, icon,
+                "Take the request back.",
+                colourOverride: hovered ? Col.Danger : Col.TextMuted))
+            Friendships.Remove(entry.Id);
+
+        ImGui.SetCursorScreenPos(place);
+
+        Pill.DrawAt(
+            new Vector2(min.X + pad, actionTop + ((ActionRow - Pill.Height) / 2f)),
+            "Waiting", Pill.Tone.Caution,
+            "They haven't answered yet. It shows in their Friends tab within a minute of them "
+            + "being asked - there is nothing more to do from this end.",
+            Footnote(entry, "Sent", Looks.IsSharing(entry.Character)));
+    }
+
+    /// Which of the four things is true about a friend, and the sentence behind it.
+    private static (string Label, Pill.Tone Tone, string Tooltip) Status(
+        bool blocked, bool live, bool sharing)
+    {
+        if (blocked)
         {
-            x -= iconWidth;
-
-            if (hovered)
-            {
-                ImGui.SetCursorScreenPos(new Vector2(x, origin.Y + ((rowHeight - iconWidth) / 2f)));
-
-                if (EchoButton.BareIcon(
-                        $"##unfriend{entry.Id}", plugin.Fonts.Icon, FontAwesomeIcon.UserMinus, iconWidth,
-                        "Remove this friend.", colourOverride: Theme.Bad))
-                {
-                    confirming = entry.Id;
-                }
-            }
-
-            x -= iconWidth + gap;
-
-            if (hovered || blocked)
-            {
-                ImGui.SetCursorScreenPos(new Vector2(x, origin.Y + ((rowHeight - iconWidth) / 2f)));
-
-                if (EchoButton.BareIcon(
-                        $"##block{entry.Id}", plugin.Fonts.Icon,
-                        blocked ? FontAwesomeIcon.EyeSlash : FontAwesomeIcon.Eye, iconWidth,
-                        blocked
-                            ? "Hidden. Click to see their glamours again."
-                            : "Hide their glamours without unfriending them.",
-                        colourOverride: blocked ? Theme.Warning : Theme.TextDisabled))
-                {
-                    Friendships.SetBlocked(entry.Character, !blocked);
-                }
-            }
+            return ("Hidden", Pill.Tone.Caution,
+                "You won't see their glamours until you turn the eye back on. They aren't told, "
+                + "and you are still friends.");
         }
 
-        var textWidth = MathF.Max(0f, x - origin.X - padX - gap);
+        if (live)
+        {
+            return ("On Screen", Pill.Tone.Success,
+                "EchoGlam is drawing their glamour for you right now.");
+        }
 
-        var detail = blocked
-            ? $"{World(entry.Character)} - hidden"
-            : $"{World(entry.Character)} - friends since {Since(entry.WhenUtc)}";
+        if (sharing)
+        {
+            return ("Sharing", Pill.Tone.Accent,
+                "They're logged in with sharing on. You'll see their glamour when they're in front "
+                + "of you.");
+        }
 
-        DrawTwoLines(drawList, origin + new Vector2(padX, 0f), rowHeight, textWidth,
-            Name(entry.Character), detail);
+        return ("Not Sharing", Pill.Tone.Neutral,
+            "The relay has nothing from them - they're logged out, or sharing is off at their "
+            + "end.");
+    }
 
-        ImGui.SetCursorScreenPos(new Vector2(origin.X, origin.Y + rowHeight));
+    /// The dated half of a person's tooltip: when this started, and when they were last about.
+    private string Footnote(FriendEntry entry, string verb, bool about)
+    {
+        var when = entry.WhenUtc.ToLocalTime().ToString("d MMM yyyy");
+
+        var seen = about
+            ? "just now"
+            : Ago(Friendships.LastSeen(entry.Character) ?? entry.WhenUtc);
+
+        return $"{verb} {when}\nLast seen {seen}";
+    }
+
+    /// How long ago, in the largest unit that still says something.
+    private static string Ago(DateTime whenUtc)
+    {
+        var span = DateTime.UtcNow - whenUtc;
+
+        return span switch
+        {
+            { TotalMinutes: < 2 } => "a moment ago",
+            { TotalHours: < 1 } => $"{(int)span.TotalMinutes} minutes ago",
+            { TotalHours: < 2 } => "an hour ago",
+            { TotalDays: < 1 } => $"{(int)span.TotalHours} hours ago",
+            { TotalDays: < 2 } => "yesterday",
+            { TotalDays: < 7 } => $"{(int)span.TotalDays} days ago",
+            _ => whenUtc.ToLocalTime().ToString("d MMM yyyy"),
+        };
     }
 
 
-    private void DrawOutgoingPanel(float width)
+    /// Board profile ids by character key.
+    private readonly Dictionary<string, string?> profiles = new(StringComparer.OrdinalIgnoreCase);
+
+    /// The character a lookup is in flight for, so a second click cannot start a second one.
+    private string? looking;
+
+    private sealed record Resolved(string Character, string? ProfileId)
     {
-        var scale = UiHelpers.Scale;
-
-        Theme.BeginPanel(width);
-
-        var inner = width - (28f * scale);
-
-        Theme.SectionHeader($"Waiting ({Friendships.Outgoing.Count})", ruleWidth: inner);
-        ImGui.Dummy(new Vector2(0f, 6f * scale));
-
-        foreach (var entry in Friendships.Outgoing.ToList())
-        {
-            DrawOutgoingRow(entry, inner);
-            ImGui.Dummy(new Vector2(0f, 4f * scale));
-        }
-
-        Theme.EndPanel();
+        /// Whether the lookup threw rather than coming back empty.
+        public bool Failed { get; init; }
     }
 
-    private void DrawOutgoingRow(FriendEntry entry, float width)
+    /// Set by a finished lookup and read on the next frame - see the note in Draw.
+    private volatile Resolved? landed;
+
+    /// Sends the window to somebody's board profile, finding it first if need be.
+    private void OpenProfileFor(string characterKey)
     {
-        var scale = UiHelpers.Scale;
-        var rowHeight = 40f * scale;
-        var padX = 10f * scale;
-        var gap = 6f * scale;
-        var iconWidth = 22f * scale;
+        if (profiles.TryGetValue(characterKey, out var known))
+        {
+            if (known is null)
+            {
+                notice = Missing(characterKey);
+            }
+            else
+            {
+                notice = Message.None;
+                OpenProfile?.Invoke(known);
+            }
 
-        var origin = ImGui.GetCursorScreenPos();
-        var drawList = ImGui.GetWindowDrawList();
+            return;
+        }
 
-        ImGui.InvisibleButton($"##out{entry.Id}", new Vector2(width, rowHeight), ImGuiButtonFlags.MouseButtonLeft);
+        if (looking is not null)
+            return;
+
+        looking = characterKey;
+        Resolve(characterKey);
+    }
+
+    private static Message Missing(string characterKey) =>
+        Message.Warn(
+            $"{Name(characterKey)} hasn't published a glamour, so there's no profile to open.");
+
+    /// Finds somebody's board profile from their character name.
+    private void Resolve(string characterKey)
+    {
+        var name = Name(characterKey);
+        var world = World(characterKey);
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var page = await GalleryClient.BrowseAsync(
+                    new GalleryQuery
+                    {
+                        Sort = GlamourSort.Newest,
+                        Text = name,
+
+                        PageSize = 50,
+                    },
+                    plugin.Gallery.OwnerKey,
+                    CancellationToken.None).ConfigureAwait(false);
+
+                var match = page.Entries.FirstOrDefault(entry =>
+                    string.Equals(entry.AuthorName, name, StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(entry.AuthorWorld, world, StringComparison.OrdinalIgnoreCase)
+                    && entry.AuthorId.Length > 0);
+
+                landed = new Resolved(characterKey, match?.AuthorId);
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.Debug(ex, "[EchoGlam] Could not look up a friend's board profile.");
+                landed = new Resolved(characterKey, null) { Failed = true };
+            }
+        });
+    }
+
+    /// What the grid says when there is nobody in it.
+    private void DrawNothing(float width)
+    {
+        if (showingWaiting)
+        {
+            Notice.Empty(
+                width, FontAwesomeIcon.PaperPlane, "Nobody's waiting",
+                search.Length > 0
+                    ? $"No request you've sent is to anybody called \"{search}\"."
+                    : "Requests you send show here until they're answered.");
+
+            return;
+        }
+
+        if (search.Length > 0)
+        {
+            Notice.Empty(
+                width, FontAwesomeIcon.Search, "Nobody matches that",
+                $"No friend's name contains \"{search}\".");
+
+            return;
+        }
+
+        if (!Friendships.Synced)
+        {
+            Notice.Busy(width, "Checking", "Asking the relay who you know.");
+            return;
+        }
+
+        Notice.Empty(
+            width, FontAwesomeIcon.UserPlus, "No friends yet",
+            "Right-click somebody in game and choose Add EchoGlam Friend.");
+    }
+
+
+    /// Submits the card's own hit area and says what the pointer did to it.
+    private static (bool Hovered, bool Clicked) CardHit(string id, Vector2 min, Vector2 size)
+    {
+        var cursor = ImGui.GetCursorScreenPos();
+
+        ImGui.SetCursorScreenPos(min);
+        ImGui.InvisibleButton(id, size, ImGuiButtonFlags.MouseButtonLeft);
+
         var hovered = ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenBlockedByActiveItem);
+        var clicked = ImGui.IsItemClicked(ImGuiMouseButton.Left);
+
         ImGui.SetItemAllowOverlap();
 
-        drawList.AddRectFilled(
-            origin, origin + new Vector2(width, rowHeight),
-            ImGui.GetColorU32(hovered ? Theme.Tinted(0.09f) : Theme.Tinted(0.02f)), 8f * scale);
-
-        var x = origin.X + width - iconWidth - padX;
+        ImGui.SetCursorScreenPos(cursor);
 
         if (hovered)
+            ImGui.SetMouseCursor(ImGuiMouseCursor.Hand);
+
+        return (hovered, clicked);
+    }
+
+    /// A name over its world, vertically centred in a height the caller owns.
+    private static void TwoLines(
+        ImDrawListPtr drawList, Vector2 min, float height, string primary, string secondary,
+        float room)
+    {
+        var line = ImGui.GetTextLineHeight();
+        var block = line + Sp.Xxs + (Text.CaptionSize * 1.15f);
+        var top = min.Y + ((height - block) / 2f);
+
+        drawList.AddText(new Vector2(min.X, top), Col.U32(Col.Text), Text.Truncate(primary, room));
+
+        using (Text.PushCaption())
         {
-            ImGui.SetCursorScreenPos(new Vector2(x, origin.Y + ((rowHeight - iconWidth) / 2f)));
-
-            if (EchoButton.BareIcon(
-                    $"##withdraw{entry.Id}", plugin.Fonts.Icon, FontAwesomeIcon.Times, iconWidth,
-                    "Take the request back.", colourOverride: Theme.Bad))
-            {
-                Friendships.Remove(entry.Id);
-            }
+            Text.Tracked(
+                drawList, new Vector2(min.X, top + line + Sp.Xxs),
+                secondary.ToUpperInvariant(), Col.U32(Col.TextDim), 1.4f, room);
         }
-
-        var textWidth = MathF.Max(0f, x - origin.X - padX - gap);
-
-        ImGui.PushStyleColor(ImGuiCol.Text, Theme.TextDisabled);
-        drawList.AddText(
-            origin + new Vector2(padX, (rowHeight - ImGui.GetTextLineHeight()) / 2f),
-            ImGui.GetColorU32(Theme.TextDisabled),
-            UiHelpers.Truncate($"{Name(entry.Character)} - waiting for an answer", textWidth));
-        ImGui.PopStyleColor();
-
-        ImGui.SetCursorScreenPos(new Vector2(origin.X, origin.Y + rowHeight));
-    }
-
-
-    /// A name on top and a quieter line under it, vertically centred as a pair.
-    private static void DrawTwoLines(
-        ImDrawListPtr drawList, Vector2 origin, float rowHeight, float width, string top, string bottom)
-    {
-        var lineHeight = ImGui.GetTextLineHeight();
-        var gap = 2f * UiHelpers.Scale;
-        var blockHeight = (lineHeight * 2f) + gap;
-        var y = origin.Y + ((rowHeight - blockHeight) / 2f);
-
-        drawList.AddText(
-            new Vector2(origin.X, y), ImGui.GetColorU32(Theme.Text), UiHelpers.Truncate(top, width));
-
-        drawList.AddText(
-            new Vector2(origin.X, y + lineHeight + gap), ImGui.GetColorU32(Theme.TextDisabled),
-            UiHelpers.Truncate(bottom, width));
-    }
-
-    private static void Centred(string text, Vector4 colour, float width)
-    {
-        var size = ImGui.CalcTextSize(text);
-
-        ImGui.SetCursorPosX(ImGui.GetCursorPosX() + MathF.Max(0f, (width - size.X) / 2f));
-        ImGui.PushStyleColor(ImGuiCol.Text, colour);
-        ImGui.TextUnformatted(text);
-        ImGui.PopStyleColor();
     }
 
     private static string Name(string characterKey)
@@ -499,19 +1017,4 @@ public sealed class FriendsTab
         return at > 0 && at < characterKey.Length - 1 ? characterKey[(at + 1)..] : "Unknown world";
     }
 
-    /// "today", "3 days ago", "2 months ago".
-    private static string Since(DateTime whenUtc)
-    {
-        var days = (int)(DateTime.UtcNow - whenUtc).TotalDays;
-
-        return days switch
-        {
-            <= 0 => "today",
-            1 => "yesterday",
-            < 30 => $"{days} days ago",
-            < 60 => "a month ago",
-            < 365 => $"{days / 30} months ago",
-            _ => "over a year ago",
-        };
-    }
 }

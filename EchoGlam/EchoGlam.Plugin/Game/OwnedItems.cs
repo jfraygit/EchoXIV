@@ -88,6 +88,9 @@ public sealed unsafe class OwnedItems
     /// How many distinct items this character is known to have.
     public int Count => flattened.Count;
 
+    /// Bumped whenever the owned set is replaced.
+    public int Version { get; private set; }
+
     /// Whether the catalogue's copy of this item is one the player can get at.
     public bool Contains(uint itemId) => flattened.Contains(Normalise(itemId));
 
@@ -283,6 +286,7 @@ public sealed unsafe class OwnedItems
         }
 
         flattened = set;
+        Version++;
     }
 
     /// Forgets everything known about this character, so the next scans start clean.
@@ -293,6 +297,7 @@ public sealed unsafe class OwnedItems
 
         byCharacter.Remove(currentCharacter);
         flattened = [];
+        Version++;
         dirty = true;
         FlushIfDirty();
     }

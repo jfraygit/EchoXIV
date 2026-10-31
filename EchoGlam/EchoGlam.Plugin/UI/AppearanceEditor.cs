@@ -6,12 +6,11 @@ using Dalamud.Interface;
 using Dalamud.Interface.Textures;
 using EchoGlam.Game;
 using EchoGlam.UI.Controls;
-using LuminaRace = Lumina.Excel.Sheets.Race;
-using LuminaTribe = Lumina.Excel.Sheets.Tribe;
+using EchoGlam.UI.Foundation;
 
 namespace EchoGlam.UI;
 
-/// The appearance half of the Dressing Room.
+/// The appearance half of the Dressing Room: your own face, and the six parts of it you can change.
 public sealed class AppearanceEditor
 {
     private readonly Plugin plugin;
@@ -33,404 +32,1259 @@ public sealed class AppearanceEditor
     /// Drops the draft so the next frame re-reads the character.
     public void Invalidate() => draft = null;
 
+
+    private enum Part
+    {
+        Face,
+        Eyes,
+        Hair,
+        Skin,
+        Build,
+        Race,
+    }
+
+    /// A part, its label in the index, and every byte it owns.
+    private readonly record struct PartSpec(Part Which, string Label, CustomizeIndex[] Bytes);
+
+    /// IN THE ORDER SOMEBODY ACTUALLY WORKS.
+    private static readonly PartSpec[] Parts =
+    [
+        new(Part.Face, "Face",
+        [
+            CustomizeIndex.Face, CustomizeIndex.Nose, CustomizeIndex.Jaw,
+            CustomizeIndex.Mouth, CustomizeIndex.LipColour,
+        ]),
+        new(Part.Eyes, "Eyes",
+        [
+            CustomizeIndex.EyeShape, CustomizeIndex.Eyebrows,
+            CustomizeIndex.EyeColourRight, CustomizeIndex.EyeColourLeft,
+        ]),
+        new(Part.Hair, "Hair",
+        [
+            CustomizeIndex.Hair, CustomizeIndex.HairColour,
+            CustomizeIndex.HasHighlights, CustomizeIndex.HighlightsColour,
+        ]),
+        new(Part.Skin, "Skin",
+        [
+            CustomizeIndex.SkinColour, CustomizeIndex.FacialFeatures,
+            CustomizeIndex.FacialFeatureColour, CustomizeIndex.Facepaint,
+            CustomizeIndex.FacepaintColour,
+        ]),
+        new(Part.Build, "Build",
+        [
+            CustomizeIndex.Height, CustomizeIndex.BodyType, CustomizeIndex.RaceFeatureSize,
+            CustomizeIndex.RaceFeatureType, CustomizeIndex.BustSize,
+        ]),
+        new(Part.Race, "Race",
+        [
+            CustomizeIndex.Race, CustomizeIndex.Tribe, CustomizeIndex.Sex,
+        ]),
+    ];
+
+    /// Which part is open.
+    private Part part = Part.Face;
+
+    /// Set when Revert is pressed, acted on at the END of the frame.
+    private bool revertRequested;
+
+
+    /// Radius of the status lamp's core, and how far its halo carries as a multiple of it.
+    private const float LampDesign = 5f;
+    private const float LampHalo = 2.4f;
+
+    /// How fast the lamp breathes, in radians a second.
+    private const float PulseSpeed = 1.6f;
+
+    /// Side of a picture option, in design units.
+    private const float OptionDesign = 50f;
+
+    /// Side of a numbered chip - a nose, a jaw, one facial feature.
+    private const float ChipDesign = 32f;
+
+    /// A colour plate: the chosen colour, shown as much of it as a row can carry.
+    private const float PlateDesign = 132f;
+
+    /// Side of one swatch in the palette popup, matching the dye grid in the Dressing Room because they are
+    /// the same gesture.
+    private const float SwatchDesign = 26f;
+
+    /// Narrowest a named race tile may be before the grid drops a column.
+    private const float RaceTileDesign = 124f;
+
+    /// Width of a bare switch, for right-aligning one against a label.
+    private const float ToggleDesign = 38f;
+
+    /// How far a picture is inset inside its cell, and the radius of an index change dot.
+    private const float IconInsetDesign = 3f;
+
+    private const float DotDesign = 2.6f;
+
+    /// Smallest thing somebody is expected to hit, which is what the revert marks are drawn at.
+    private static float MarkRoom => Metrics.TouchMin;
+
+    /// A field heading's row, as tall as the mark that sits on it.
+    private static float HeadHeight => MathF.Max(Text.CaptionSize * 1.4f, MarkRoom);
+
+
     public void Draw()
     {
-        var scale = UiHelpers.Scale;
-
         if (!Appearance.LayoutTrusted)
         {
-            DrawLayoutFailure();
+            Notice.Fail(
+                ImGui.GetContentRegionAvail().X,
+                "Appearance Editing Is Switched Off",
+                "The twenty-six bytes that describe a character no longer sit where EchoGlam expects, "
+                + "which usually means a game update moved them. Editing anyway would mean writing to "
+                + "bytes whose meaning is unknown, so the editor stays off until it is corrected. "
+                + "Your gear is unaffected.");
+
             return;
         }
 
         var player = Plugin.ObjectTable.LocalPlayer;
+
         if (player == null)
         {
-            ImGui.TextColored(Theme.TextDim, "No character loaded.");
+            Notice.Empty(
+                ImGui.GetContentRegionAvail().X, FontAwesomeIcon.User,
+                "No Character Loaded",
+                "There is nobody to read an appearance from yet. This fills in as soon as you are in "
+                + "the world.");
+
             return;
         }
 
         draft ??= new CustomizeSet([.. player.Customize]);
 
         CommitIfSettled();
-        DrawHeader();
 
-        if (draft == null)
+        var halo = EchoButton.GlowReach;
+
+        var available = ImGui.GetContentRegionAvail() - new Vector2(halo, halo);
+        var origin = ImGui.GetCursorScreenPos();
+
+        var status = DrawStatus(available.X);
+
+        ImGui.SetCursorScreenPos(new Vector2(origin.X, origin.Y + status));
+        var index = DrawIndex(available.X);
+
+        var consumed = status + index;
+
+        ImGui.SetCursorScreenPos(new Vector2(origin.X, origin.Y + consumed));
+
+        DrawPart(available.X, MathF.Max(Metrics.RowTall * 3f, available.Y - consumed));
+
+        if (!revertRequested)
             return;
 
-        ImGui.Dummy(new Vector2(0f, 8f * scale));
-        DrawBlocks();
+        revertRequested = false;
+
+        Wardrobe.ClearAppearance();
+        draft = null;
+        dirty = false;
     }
 
-    /// Below this the two columns are narrower than a sensible run of swatches, so the layout drops to one.
-    private const float TwoColumnMinDesign = 780f;
 
-    /// Lays the feature blocks out in one column or two.
-    private void DrawBlocks()
+    /// The banner: a lamp, whether this is your own face or an edited one, how far from yours it is, and the
+    /// way back.
+    private float DrawStatus(float width)
     {
-        var scale = UiHelpers.Scale;
-        var available = ImGui.GetContentRegionAvail().X;
-        var gap = 10f * scale;
-
-        if (available < TwoColumnMinDesign * scale)
-        {
-            columnWidth = available;
-            DrawTallBlocks();
-            DrawCompactBlocks();
-            return;
-        }
-
-        columnWidth = (available - gap) / 2f;
-
-        var startX = ImGui.GetCursorPosX();
-        var startY = ImGui.GetCursorPosY();
-
-        ImGui.BeginGroup();
-        DrawTallBlocks();
-        ImGui.EndGroup();
-
-        var leftBottom = ImGui.GetCursorPosY();
-
-        ImGui.SetCursorPos(new Vector2(startX + columnWidth + gap, startY));
-
-        ImGui.BeginGroup();
-        DrawCompactBlocks();
-        ImGui.EndGroup();
-
-        ImGui.SetCursorPos(new Vector2(startX, MathF.Max(leftBottom, ImGui.GetCursorPosY())));
-    }
-
-    /// How wide a column is this frame.
-    private float columnWidth;
-
-    /// Usable width inside the block being drawn, once its padding is taken off.
-    private float contentWidth;
-
-    private void DrawTallBlocks()
-    {
-        var menus = Menus();
-
-        DrawIdentityBlock();
-        DrawSkinBlock();
-        DrawHairBlock(menus);
-        DrawEyesBlock(menus);
-    }
-
-    private void DrawCompactBlocks()
-    {
-        var menus = Menus();
-
-        DrawFaceBlock(menus);
-        DrawMouthBlock(menus);
-        DrawFeaturesBlock(menus);
-        DrawFacePaintBlock(menus);
-        DrawBodyBlock(menus);
-    }
-
-    private const float BlockPadX = 14f;
-    private const float BlockPadY = 13f;
-    private const float BlockGap = 11f;
-
-    /// Between one field and the next inside a block.
-    private const float RowGap = 13f;
-
-    /// Between a field's label and the control under it.
-    private const float LabelGap = 6f;
-
-    private Vector2 blockOrigin;
-    private float blockWidth;
-
-    /// Opens a titled block with a panel behind it.
-    private void BeginBlock(string title)
-    {
-        var scale = UiHelpers.Scale;
-        var drawList = ImGui.GetWindowDrawList();
-
-        blockOrigin = ImGui.GetCursorScreenPos();
-        blockWidth = columnWidth;
-        contentWidth = MathF.Max(40f * scale, blockWidth - (BlockPadX * 2f * scale));
-
-        drawList.ChannelsSplit(2);
-        drawList.ChannelsSetCurrent(1);
-
-        ImGui.BeginGroup();
-        ImGui.Dummy(new Vector2(blockWidth, BlockPadY * scale));
-        ImGui.Indent(BlockPadX * scale);
-
-        DrawBlockTitle(title);
-    }
-
-    /// A block's heading: an accent tick and tracked small capitals.
-    private void DrawBlockTitle(string title)
-    {
-        var scale = UiHelpers.Scale;
         var drawList = ImGui.GetWindowDrawList();
         var origin = ImGui.GetCursorScreenPos();
-        var lineHeight = ImGui.GetTextLineHeight();
-
-        var tickWidth = 3f * scale;
-        var tickTop = origin.Y + (lineHeight * 0.16f);
-
-        drawList.AddRectFilled(
-            new Vector2(origin.X, tickTop),
-            new Vector2(origin.X + tickWidth, tickTop + (lineHeight * 0.68f)),
-            ImGui.GetColorU32(Theme.Accent), 1.5f * scale);
-
-        var x = origin.X + tickWidth + (8f * scale);
-        var colour = ImGui.GetColorU32(Theme.Text);
-        var tracking = 1.4f * scale;
-
-        foreach (var character in title.ToUpperInvariant())
-        {
-            var glyph = character.ToString();
-            drawList.AddText(new Vector2(x, origin.Y), colour, glyph);
-            x += ImGui.CalcTextSize(glyph).X + tracking;
-        }
-
-        ImGui.Dummy(new Vector2(0f, lineHeight + (RowGap * scale)));
-    }
-
-    private void EndBlock()
-    {
         var scale = UiHelpers.Scale;
 
-        ImGui.Unindent(BlockPadX * scale);
-        ImGui.Dummy(new Vector2(0f, BlockPadY * scale));
-        ImGui.EndGroup();
+        var height = DressingRoomTab.BannerHeight;
+        var pad = Sp.Xl;
 
+        var overridden = Wardrobe.HasAppearanceOverride;
+        var changes = Changes();
+
+        Surface.Paint(
+            origin, new Vector2(width, height), SurfaceKind.Raised,
+            overridden ? Theme.Accent : null, inside: true);
+
+        var icons = plugin.Fonts.Icon;
+        var revertWidth = EchoButton.ContentSize("Revert", icons, FontAwesomeIcon.UndoAlt).X;
+        var cursor = ImGui.GetCursorScreenPos();
+
+        ImGui.SetCursorScreenPos(
+            new Vector2(origin.X + width - pad - revertWidth, origin.Y + ((height - Metrics.Row) / 2f)));
+
+        if (EchoButton.Draw(
+                "##appearancerevert", "Revert", new Vector2(revertWidth, Metrics.Row),
+                iconFont: icons, icon: FontAwesomeIcon.UndoAlt,
+                enabled: overridden,
+                tooltip: overridden
+                    ? "Puts your own face back and leaves your gear alone. Revert All under the "
+                      + "character takes both."
+                    : "Nothing is changed, so there is nothing to put back."))
+        {
+            revertRequested = true;
+        }
+
+        ImGui.SetCursorScreenPos(cursor);
+
+
+        string headline;
+        string meta;
+        Vector4 tone;
+
+        if (!overridden)
+        {
+            headline = "Your Own Face";
+            meta = "Nothing here is changed. Edit anything below and it goes on straight away.";
+            tone = Col.TextMuted;
+        }
+        else if (changes == 0)
+        {
+            headline = "Nothing Different";
+            meta = "An appearance is set, and every value in it matches your own.";
+            tone = Col.TextMuted;
+        }
+        else
+        {
+            headline = changes is { } n
+                ? $"{n} {(n == 1 ? "Change" : "Changes")}"
+                : "Changed";
+
+            meta = "Your own face is remembered. Revert puts all of it back; the mark beside a field "
+                   + "puts one.";
+
+            tone = Theme.Accent;
+        }
+
+        if (dirty)
+        {
+            meta = "Rebuilding your character...";
+            tone = Theme.Accent;
+        }
+
+        var lamp = LampDesign * scale;
+        var reach = lamp * LampHalo;
+
+        var captionLine = Text.CaptionSize * 1.15f;
+        var titleLine = Text.TitleSize * 1.2f;
+        var block = captionLine + Sp.Xs + titleLine + Sp.Xs + captionLine;
+        var top = origin.Y + ((height - block) / 2f);
+
+        var centre = new Vector2(origin.X + pad + reach, 0f);
+        var headlineTop = top + captionLine + Sp.Xs;
+
+        var textLeft = centre.X + lamp + Sp.Md;
+        var room = MathF.Max(Sp.Xxxl, origin.X + width - pad - revertWidth - Sp.Xl - textLeft);
+
+        using (Text.PushCaption())
+        {
+            Text.Tracked(
+                drawList, new Vector2(textLeft, top), "APPEARANCE",
+                Col.U32(overridden ? Theme.Accent : Col.TextMuted), 1.8f, room);
+        }
+
+        using (Text.PushTitle())
+        {
+            drawList.AddText(
+                new Vector2(textLeft, headlineTop),
+                Col.U32(overridden ? Col.Text : Col.TextDim),
+                Text.Truncate(headline, room));
+
+            var font = ImGui.GetFont();
+            var cap = ImGui.FindGlyph(font, 'N');
+
+            centre.Y = headlineTop + (cap.IsNull || font.FontSize <= 0f
+                ? ImGui.GetTextLineHeight() / 2f
+                : (cap.Y0 + cap.Y1) / 2f * (ImGui.GetFontSize() / font.FontSize));
+        }
+
+        using (Text.PushCaption())
+        {
+            drawList.AddText(
+                new Vector2(textLeft, headlineTop + titleLine + Sp.Xs),
+                Col.U32(Col.TextDim), Text.Truncate(meta, room));
+        }
+
+        var pulse = dirty
+            ? 0.5f + (0.5f * MathF.Sin((float)ImGui.GetTime() * PulseSpeed))
+            : 0f;
+
+        for (var ring = 3; ring >= 1; ring--)
+        {
+            drawList.AddCircleFilled(
+                centre,
+                lamp * (1f + (ring * 0.4f * (dirty ? 0.8f + (0.35f * pulse) : 1f))),
+                Col.U32(tone with { W = dirty ? 0.05f + (0.05f * pulse) : 0.03f }), 24);
+        }
+
+        drawList.AddCircleFilled(centre, lamp, Col.U32(tone), 24);
+
+        ImGui.SetCursorScreenPos(origin);
+        ImGui.Dummy(new Vector2(width, height));
+
+        return height + Sp.Lg;
+    }
+
+
+    /// The index: six parts in tracked capitals, a lit rule under the open one, and a dot over any part
+    /// holding a change.
+    private float DrawIndex(float width)
+    {
         var drawList = ImGui.GetWindowDrawList();
-        var height = ImGui.GetItemRectMax().Y - blockOrigin.Y;
-        var max = blockOrigin + new Vector2(blockWidth, height);
-        var rounding = 8f * scale;
+        var origin = ImGui.GetCursorScreenPos();
+        var row = Metrics.RowTall;
 
-        drawList.ChannelsSetCurrent(0);
+        var dot = Sp.Px(DotDesign);
+        var dotRoom = Sp.Md;
 
-        for (var i = 3; i >= 1; i--)
+        Span<float> runs = stackalloc float[Parts.Length];
+        Span<float> slots = stackalloc float[Parts.Length];
+        Span<float> starts = stackalloc float[Parts.Length];
+
+        var total = 0f;
+
+        using (Text.PushCaption())
         {
-            var offset = new Vector2(0f, i * 1.5f * scale);
-            drawList.AddRectFilled(
-                blockOrigin + offset, max + offset,
-                ImGui.GetColorU32(new Vector4(0f, 0f, 0f, 0.045f * i)), rounding);
+            for (var i = 0; i < Parts.Length; i++)
+            {
+                runs[i] = Text.TrackedWidth(Parts[i].Label.ToUpperInvariant(), 1.8f);
+
+                slots[i] = runs[i] + dotRoom;
+                total += slots[i];
+            }
         }
 
-        drawList.AddRectFilled(blockOrigin, max, ImGui.GetColorU32(Theme.Panel), rounding);
+        var gap = Parts.Length > 1
+            ? MathF.Max(Sp.Xl, (width - total) / (Parts.Length - 1))
+            : 0f;
 
-        drawList.AddRect(
-            blockOrigin, max,
-            ImGui.GetColorU32(new Vector4(1f, 1f, 1f, 0.055f)), rounding, ImDrawFlags.None, 1f * scale);
+        var x = 0f;
 
-        drawList.ChannelsMerge();
-
-        ImGui.Dummy(new Vector2(0f, BlockGap * scale));
-    }
-
-    private void DrawIdentityBlock()
-    {
-        BeginBlock("Who you are");
-
-        var set = draft!;
-
-        if (DrawCombo("Race", RaceNames(), set[CustomizeIndex.Race], out var race))
+        for (var i = 0; i < Parts.Length; i++)
         {
-            set[CustomizeIndex.Race] = race;
-
-            set[CustomizeIndex.Tribe] = (byte)(((race - 1) * 2) + 1);
-            Touch();
+            starts[i] = x;
+            x += slots[i] + gap;
         }
 
-        if (DrawCombo("Clan", TribeNamesFor(set[CustomizeIndex.Race]), set[CustomizeIndex.Tribe], out var tribe))
+        var open = 0;
+
+        for (var i = 0; i < Parts.Length; i++)
         {
-            set[CustomizeIndex.Tribe] = tribe;
-            Touch();
+            if (Parts[i].Which != part)
+                continue;
+
+            open = i;
+            break;
         }
 
-        if (DrawCombo("Gender", GenderNames, set[CustomizeIndex.Sex], out var sex))
+        var slide = Motion.Ease("appearancepart", open, Anim.SelectSpeed);
+
+        var lower = Math.Clamp((int)MathF.Floor(slide), 0, Parts.Length - 1);
+        var upper = Math.Clamp(lower + 1, 0, Parts.Length - 1);
+        var t = slide - lower;
+
+        var markX = origin.X + starts[lower] + ((starts[upper] - starts[lower]) * t);
+        var markWidth = runs[lower] + ((runs[upper] - runs[lower]) * t);
+        var markY = origin.Y + row - Stroke.Mark;
+
+        var markMin = new Vector2(markX, markY);
+        var markMax = new Vector2(markX + markWidth, markY + Stroke.Mark);
+
+        Elev.Glow(drawList, markMin, markMax, Theme.Accent, 0.44f, Stroke.Mark, 4f);
+        drawList.AddRectFilled(markMin, markMax, Col.U32(Theme.Accent), Stroke.Mark / 2f);
+
+
+        var captionLine = Text.CaptionSize * 1.15f;
+        var labelY = origin.Y + ((row - Stroke.Mark - captionLine) / 2f);
+
+        using (Text.PushCaption())
         {
-            set[CustomizeIndex.Sex] = sex;
-            Touch();
+            for (var i = 0; i < Parts.Length; i++)
+            {
+                var min = new Vector2(origin.X + starts[i], origin.Y);
+
+                ImGui.SetCursorScreenPos(min);
+
+                var hit = ImGui.InvisibleButton(
+                    $"##part{Parts[i].Which}", new Vector2(slots[i], row),
+                    ImGuiButtonFlags.MouseButtonLeft);
+
+                var hovered = ImGui.IsItemHovered();
+
+                if (hovered)
+                    ImGui.SetMouseCursor(ImGuiMouseCursor.Hand);
+
+                if (hit)
+                    part = Parts[i].Which;
+
+                var covered = Math.Clamp(1f - MathF.Abs(slide - i), 0f, 1f);
+                var resting = hovered ? Col.Text : Col.TextDim;
+
+                Text.Tracked(
+                    drawList, new Vector2(min.X, labelY), Parts[i].Label.ToUpperInvariant(),
+                    Col.U32(Vector4.Lerp(resting, Theme.Accent, covered)), 1.8f);
+
+                var count = ChangesIn(Parts[i]);
+
+                if (count == 0)
+                    continue;
+
+                if (hovered)
+                {
+                    UiHelpers.WrappedTooltip(
+                        $"{count} {(count == 1 ? "change" : "changes")} in {Parts[i].Label.ToLowerInvariant()}.");
+                }
+
+                drawList.AddCircleFilled(
+                    new Vector2(min.X + runs[i] + (dotRoom / 2f), labelY + (captionLine * 0.3f)),
+                    dot, Col.U32(Theme.Accent), 16);
+            }
         }
 
-        EndBlock();
+        var ruleY = origin.Y + row + Sp.Md;
+
+        drawList.AddRectFilled(
+            new Vector2(origin.X, ruleY), new Vector2(origin.X + width, ruleY + Stroke.Hair),
+            Col.U32(Col.EdgeRest with { W = 0.55f }));
+
+        ImGui.SetCursorScreenPos(origin);
+        ImGui.Dummy(new Vector2(width, row));
+
+        return row + Sp.Md + Stroke.Hair + Sp.Lg;
     }
 
-    private void DrawSkinBlock()
+
+    /// Screen x every field in the open part lines up on, and how much room a field's control has.
+    private float fieldLeft;
+
+    private float content;
+
+    /// Screen x of the revert marks' column.
+    private float MarkX => fieldLeft + content + Sp.Lg;
+
+    private void DrawPart(float width, float height)
     {
-        BeginBlock("Skin");
-        DrawColour("Skin Colour", CustomizeIndex.SkinColour);
-        EndBlock();
+        if (ImGui.BeginChild(
+                "##appearancepart", new Vector2(width, height), false,
+                ImGuiWindowFlags.AlwaysVerticalScrollbar))
+        {
+            var origin = ImGui.GetCursorScreenPos();
+            var avail = ImGui.GetContentRegionAvail().X;
+
+            fieldLeft = origin.X;
+            content = MathF.Max(Sp.Xxxl, avail - MarkRoom - Sp.Lg);
+
+            var menus = Menus();
+
+            switch (part)
+            {
+                case Part.Eyes:
+                    DrawEyes(menus);
+                    break;
+
+                case Part.Hair:
+                    DrawHair(menus);
+                    break;
+
+                case Part.Skin:
+                    DrawSkin(menus);
+                    break;
+
+                case Part.Build:
+                    DrawBuild(menus);
+                    break;
+
+                case Part.Race:
+                    DrawRace();
+                    break;
+
+                default:
+                    DrawFace(menus);
+                    break;
+            }
+
+            ImGui.Dummy(new Vector2(content, Sp.Xs));
+        }
+
+        ImGui.EndChild();
     }
 
-    private void DrawHairBlock(IReadOnlyList<CharaMakeMenu> menus)
+    private void DrawFace(IReadOnlyList<CharaMakeMenu> menus)
     {
-        BeginBlock("Hair");
-
-        DrawMenu(menus, CustomizeIndex.Hair, "Style");
-        DrawColour("Colour", CustomizeIndex.HairColour);
-
-        var set = draft!;
-        DrawToggleRow("Highlights", CustomizeIndex.HasHighlights);
-
-        if ((set[CustomizeIndex.HasHighlights] & Appearance.FlagBit) != 0)
-            DrawColour("Highlight Colour", CustomizeIndex.HighlightsColour);
-
-        EndBlock();
-    }
-
-    private void DrawEyesBlock(IReadOnlyList<CharaMakeMenu> menus)
-    {
-        BeginBlock("Eyes");
-
-        DrawMenu(menus, CustomizeIndex.EyeShape, "Shape");
-        DrawToggleRow("Small Iris", CustomizeIndex.EyeShape);
-        DrawMenu(menus, CustomizeIndex.Eyebrows, "Eyebrows");
-        DrawColour("Right Eye", CustomizeIndex.EyeColourRight);
-        DrawColour("Left Eye", CustomizeIndex.EyeColourLeft);
-
-        EndBlock();
-    }
-
-    private void DrawFaceBlock(IReadOnlyList<CharaMakeMenu> menus)
-    {
-        BeginBlock("Face");
-
         DrawMenu(menus, CustomizeIndex.Face, "Shape");
         DrawMenu(menus, CustomizeIndex.Nose, "Nose");
         DrawMenu(menus, CustomizeIndex.Jaw, "Jaw");
-
-        EndBlock();
-    }
-
-    private void DrawMouthBlock(IReadOnlyList<CharaMakeMenu> menus)
-    {
-        BeginBlock("Mouth");
-
-        DrawMenu(menus, CustomizeIndex.Mouth, "Shape");
+        DrawMenu(menus, CustomizeIndex.Mouth, "Mouth");
         DrawColour("Lip Colour", CustomizeIndex.LipColour);
-
-        EndBlock();
     }
 
-    private void DrawFacePaintBlock(IReadOnlyList<CharaMakeMenu> menus)
+    private void DrawEyes(IReadOnlyList<CharaMakeMenu> menus)
     {
-        BeginBlock("Face Paint");
+        DrawMenu(menus, CustomizeIndex.EyeShape, "Shape");
 
-        DrawMenu(menus, CustomizeIndex.Facepaint, "Design");
-        DrawColour("Colour", CustomizeIndex.FacepaintColour);
+        DrawFlagRow("Small Iris", CustomizeIndex.EyeShape, marked: false);
 
-        EndBlock();
+        DrawMenu(menus, CustomizeIndex.Eyebrows, "Eyebrows");
+        DrawColour("Right Eye", CustomizeIndex.EyeColourRight);
+        DrawColour("Left Eye", CustomizeIndex.EyeColourLeft);
     }
 
-    private void DrawFeaturesBlock(IReadOnlyList<CharaMakeMenu> menus)
+    private void DrawHair(IReadOnlyList<CharaMakeMenu> menus)
     {
-        BeginBlock("Facial Features");
+        DrawMenu(menus, CustomizeIndex.Hair, "Style");
+        DrawColour("Colour", CustomizeIndex.HairColour);
+        DrawFlagRow("Highlights", CustomizeIndex.HasHighlights, marked: true);
 
-        var featureCount = CharaMake.FacialFeatureCount(menus);
+        if ((draft![CustomizeIndex.HasHighlights] & Appearance.FlagBit) != 0)
+            DrawColour("Highlight Colour", CustomizeIndex.HighlightsColour);
+    }
 
-        for (var bit = 0; bit < featureCount; bit++)
+    private void DrawSkin(IReadOnlyList<CharaMakeMenu> menus)
+    {
+        DrawColour("Colour", CustomizeIndex.SkinColour);
+
+        DrawFeatures(menus);
+        DrawColour("Feature Colour", CustomizeIndex.FacialFeatureColour);
+
+        DrawMenu(menus, CustomizeIndex.Facepaint, "Face Paint");
+        DrawColour("Paint Colour", CustomizeIndex.FacepaintColour);
+    }
+
+    private void DrawBuild(IReadOnlyList<CharaMakeMenu> menus)
+    {
+        DrawMenuSlider(menus, CustomizeIndex.Height, "Height");
+        DrawMenuSlider(menus, CustomizeIndex.BodyType, "Muscle");
+        DrawMenuSlider(menus, CustomizeIndex.RaceFeatureSize, "Ear / Tail Size");
+        DrawMenu(menus, CustomizeIndex.RaceFeatureType, "Ear / Tail Shape");
+        DrawMenuSlider(menus, CustomizeIndex.BustSize, "Bust");
+    }
+
+    /// Race, clan and gender.
+    private void DrawRace()
+    {
+        var set = draft!;
+
+        DrawRaceGrid();
+
+        var tribes = TribesFor(set[CustomizeIndex.Race], set[CustomizeIndex.Sex]);
+
+        if (tribes.Count == 2)
         {
-            DrawBitRow(
-                bit == featureCount - 1 ? "Legacy Tattoo" : $"Feature {bit + 1}",
-                CustomizeIndex.FacialFeatures, bit);
+            ReadOnlySpan<string> labels = [tribes[0].Name, tribes[1].Name];
+            var current = set[CustomizeIndex.Tribe] == tribes[1].Value ? 1 : 0;
+            var picked = DrawSegment("##clan", "Clan", labels, current, CustomizeIndex.Tribe);
+
+            if (picked != current)
+            {
+                set[CustomizeIndex.Tribe] = tribes[picked].Value;
+                Reconcile();
+                Touch();
+            }
         }
 
-        DrawColour("Colour", CustomizeIndex.FacialFeatureColour);
+        {
+            ReadOnlySpan<string> labels = ["Masculine", "Feminine"];
+            var current = set[CustomizeIndex.Sex] == 1 ? 1 : 0;
+            var picked = DrawSegment("##gender", "Gender", labels, current, CustomizeIndex.Sex);
 
-        EndBlock();
+            if (picked != current)
+            {
+                set[CustomizeIndex.Sex] = (byte)picked;
+                Reconcile();
+                Touch();
+            }
+        }
+
+        ImGui.SetCursorScreenPos(new Vector2(fieldLeft, ImGui.GetCursorScreenPos().Y));
+
+        using (Text.PushCaption())
+        {
+            ImGui.PushStyleColor(ImGuiCol.Text, Col.TextMuted);
+            ImGui.PushTextWrapPos(ImGui.GetCursorPosX() + content);
+
+            ImGui.TextUnformatted(
+                "Changing any of these three puts anything the new race, clan or gender does not "
+                + "offer back to its default - the game's own, not a guess.");
+
+            ImGui.PopTextWrapPos();
+            ImGui.PopStyleColor();
+        }
     }
 
-    private void DrawBodyBlock(IReadOnlyList<CharaMakeMenu> menus)
+
+    /// A stacked field's heading: tracked capitals, how many choices there are, whatever reading belongs at
+    /// the far end, and the mark that reverts it.
+    private float Head(Vector2 at, string label, int? count, CustomizeIndex index, string? reading = null)
     {
-        BeginBlock("Build");
+        var drawList = ImGui.GetWindowDrawList();
+        var head = HeadHeight;
+        var textY = at.Y + ((head - Text.CaptionSize) / 2f);
 
-        DrawSlider(menus, CustomizeIndex.Height, "Height");
-        DrawSlider(menus, CustomizeIndex.BodyType, "Muscle");
-        DrawSlider(menus, CustomizeIndex.RaceFeatureSize, "Ear / Tail Size");
-        DrawMenu(menus, CustomizeIndex.RaceFeatureType, "Ear / Tail Shape");
-        DrawSlider(menus, CustomizeIndex.BustSize, "Bust");
+        var readingWidth = reading is null ? 0f : Text.Width(reading);
 
-        EndBlock();
+        using (Text.PushCaption())
+        {
+            var used = Text.Tracked(
+                drawList, new Vector2(fieldLeft, textY), label.ToUpperInvariant(),
+                Col.U32(Col.TextMuted), 1.8f,
+                MathF.Max(Sp.Xl, content - readingWidth - Sp.Xl));
+
+            if (count is { } n)
+            {
+                drawList.AddText(
+                    new Vector2(fieldLeft + used + Sp.Md, textY),
+                    Col.U32(Col.TextMuted with { W = 0.5f }), n.ToString());
+            }
+        }
+
+        if (reading is not null)
+        {
+            drawList.AddText(
+                new Vector2(fieldLeft + content - readingWidth, at.Y + ((head - ImGui.GetTextLineHeight()) / 2f)),
+                Col.U32(Col.Text), reading);
+        }
+
+        DrawMark(index, at.Y + ((head - MarkRoom) / 2f));
+
+        return head + Sp.Sm;
+    }
+
+    /// The mark that puts one field back, drawn only where there is something to put back.
+    private void DrawMark(CustomizeIndex index, float y)
+    {
+        if (!ChangedAt(index))
+            return;
+
+        var cursor = ImGui.GetCursorScreenPos();
+
+        ImGui.SetCursorScreenPos(new Vector2(MarkX, y));
+
+        if (EchoButton.BareIcon(
+                $"##revert{index}", plugin.Fonts.Icon, FontAwesomeIcon.UndoAlt, MarkRoom,
+                "Changed from your own. Click to put just this one back.",
+                colourOverride: Theme.Accent))
+        {
+            RevertField(index);
+        }
+
+        ImGui.SetCursorScreenPos(cursor);
+    }
+
+    /// A row: the field's name on the left, one control pinned to the right of the content column, and the
+    /// mark beyond it.
+    private void Setting(string label, CustomizeIndex? index, float controlWidth, float controlHeight, Action draw)
+    {
+        var drawList = ImGui.GetWindowDrawList();
+        var at = ImGui.GetCursorScreenPos();
+        var line = ImGui.GetTextLineHeight();
+
+        var height = MathF.Max(MathF.Max(line, controlHeight), MarkRoom);
+
+        drawList.AddText(
+            new Vector2(fieldLeft, at.Y + ((height - line) / 2f)),
+            Col.U32(Col.TextDim),
+            Text.Truncate(label, MathF.Max(Sp.Xl, content - controlWidth - Sp.Xl)));
+
+        ImGui.SetCursorScreenPos(
+            new Vector2(fieldLeft + content - controlWidth, at.Y + ((height - controlHeight) / 2f)));
+
+        draw();
+
+        if (index is { } owned)
+            DrawMark(owned, at.Y + ((height - MarkRoom) / 2f));
+
+        ImGui.SetCursorScreenPos(new Vector2(fieldLeft, at.Y + height + Sp.Lg));
+    }
+
+    /// Draws whichever control this field's menu asks for, falling back to a slider when the game has no menu
+    /// for it.
+    private void DrawMenu(IReadOnlyList<CharaMakeMenu> menus, CustomizeIndex index, string label)
+    {
+        var menu = CharaMake.Menu(menus, index);
+
+        if (menu is null || menu.Options.Count == 0)
+        {
+            DrawSlider(label, index, 255);
+            return;
+        }
+
+        var pictures = false;
+
+        foreach (var option in menu.Options)
+        {
+            if (option.IconId == 0)
+                continue;
+
+            pictures = true;
+            break;
+        }
+
+        if (pictures)
+            DrawOptions(menu, label);
+        else
+            DrawChips(menu, label);
+    }
+
+    /// A grid of pictures, on a floor of its own - hairstyles, faces, face paint.
+    private void DrawOptions(CharaMakeMenu menu, string label)
+    {
+        var at = ImGui.GetCursorScreenPos();
+        var head = Head(at, label, menu.Options.Count, menu.Index);
+
+        var size = Sp.Px(OptionDesign);
+        var pad = Sp.Lg;
+        var step = Sp.Xs;
+
+        var inner = MathF.Max(size, content - (pad * 2f));
+        var (perRow, gap) = Spread(inner, size, step, menu.Options.Count);
+        var rows = (menu.Options.Count + perRow - 1) / perRow;
+
+        var wellMin = new Vector2(fieldLeft, at.Y + head);
+        var wellHeight = (rows * size) + ((rows - 1) * step) + (pad * 2f);
+
+        Surface.Paint(wellMin, new Vector2(content, wellHeight), SurfaceKind.Well);
+
+        var drawList = ImGui.GetWindowDrawList();
+        var set = draft!;
+        var current = ValueOf(set, menu.Index);
+        var inset = Sp.Px(IconInsetDesign);
+
+        for (var i = 0; i < menu.Options.Count; i++)
+        {
+            var option = menu.Options[i];
+
+            var min = new Vector2(
+                wellMin.X + pad + ((i % perRow) * (size + gap)),
+                wellMin.Y + pad + ((i / perRow) * (size + step)));
+
+            var max = min + new Vector2(size, size);
+
+            ImGui.SetCursorScreenPos(min);
+
+            var clicked = ImGui.InvisibleButton(
+                $"##{menu.Index}_{i}", new Vector2(size, size), ImGuiButtonFlags.MouseButtonLeft);
+
+            var hovered = ImGui.IsItemHovered();
+
+            if (clicked)
+            {
+                SetValue(set, menu.Index, option.Value);
+                Touch();
+            }
+
+            if (hovered)
+                ImGui.SetMouseCursor(ImGuiMouseCursor.Hand);
+
+            Cell.Paint(drawList, min, max, option.Value == current, hovered);
+
+            var texture = Plugin.TextureProvider
+                .GetFromGameIcon(new GameIconLookup(option.IconId)).GetWrapOrDefault();
+
+            if (texture != null)
+            {
+                drawList.AddImage(
+                    texture.Handle, min + new Vector2(inset, inset), max - new Vector2(inset, inset));
+            }
+        }
+
+        ImGui.SetCursorScreenPos(new Vector2(fieldLeft, wellMin.Y + wellHeight + Sp.Lg));
+    }
+
+    /// A row of numbered chips, for the short lists the game gives no pictures for.
+    private void DrawChips(CharaMakeMenu menu, string label)
+    {
+        var at = ImGui.GetCursorScreenPos();
+        var head = Head(at, label, menu.Options.Count, menu.Index);
+
+        var size = Sp.Px(ChipDesign);
+        var step = Sp.Xs;
+        var (perRow, gap) = Spread(content, size, step, menu.Options.Count);
+        var rows = (menu.Options.Count + perRow - 1) / perRow;
+
+        var drawList = ImGui.GetWindowDrawList();
+        var set = draft!;
+        var current = ValueOf(set, menu.Index);
+        var top = at.Y + head;
+
+        for (var i = 0; i < menu.Options.Count; i++)
+        {
+            var option = menu.Options[i];
+
+            var min = new Vector2(
+                fieldLeft + ((i % perRow) * (size + gap)),
+                top + ((i / perRow) * (size + step)));
+
+            var selected = option.Value == current;
+
+            ImGui.SetCursorScreenPos(min);
+
+            var clicked = ImGui.InvisibleButton(
+                $"##{menu.Index}_chip{i}", new Vector2(size, size), ImGuiButtonFlags.MouseButtonLeft);
+
+            var hovered = ImGui.IsItemHovered();
+
+            if (clicked)
+            {
+                SetValue(set, menu.Index, option.Value);
+                Touch();
+            }
+
+            if (hovered)
+                ImGui.SetMouseCursor(ImGuiMouseCursor.Hand);
+
+            PaintNumber(drawList, min, size, (i + 1).ToString(), selected, hovered);
+        }
+
+        ImGui.SetCursorScreenPos(
+            new Vector2(fieldLeft, top + (rows * size) + ((rows - 1) * step) + Sp.Lg));
+    }
+
+    /// The facial features: independent marks packed into one byte, as a row of chips that light up.
+    private void DrawFeatures(IReadOnlyList<CharaMakeMenu> menus)
+    {
+        var set = draft!;
+        var total = CharaMake.FacialFeatureCount(menus);
+        var marks = Math.Max(0, total - 1);
+        var index = CustomizeIndex.FacialFeatures;
+
+        if (marks > 0)
+        {
+            var at = ImGui.GetCursorScreenPos();
+            var head = Head(at, "Features", marks, index);
+
+            var size = Sp.Px(ChipDesign);
+            var step = Sp.Xs;
+            var (perRow, gap) = Spread(content, size, step, marks);
+            var rows = (marks + perRow - 1) / perRow;
+
+            var drawList = ImGui.GetWindowDrawList();
+            var top = at.Y + head;
+
+            for (var bit = 0; bit < marks; bit++)
+            {
+                var min = new Vector2(
+                    fieldLeft + ((bit % perRow) * (size + gap)),
+                    top + ((bit / perRow) * (size + step)));
+
+                var on = (set[index] & (1 << bit)) != 0;
+
+                ImGui.SetCursorScreenPos(min);
+
+                var clicked = ImGui.InvisibleButton(
+                    $"##feature{bit}", new Vector2(size, size), ImGuiButtonFlags.MouseButtonLeft);
+
+                var hovered = ImGui.IsItemHovered();
+
+                if (clicked)
+                {
+                    set[index] = on
+                        ? (byte)(set[index] & ~(1 << bit))
+                        : (byte)(set[index] | (1 << bit));
+
+                    Touch();
+                }
+
+                if (hovered)
+                    ImGui.SetMouseCursor(ImGuiMouseCursor.Hand);
+
+                PaintNumber(drawList, min, size, (bit + 1).ToString(), on, hovered, glow: false);
+            }
+
+            ImGui.SetCursorScreenPos(
+                new Vector2(fieldLeft, top + (rows * size) + ((rows - 1) * step) + Sp.Lg));
+        }
+
+        DrawBitRow("Legacy Tattoo", index, Math.Max(0, total - 1), marked: marks == 0);
+    }
+
+    /// A chip with a number in it, in the same material every other cell on the page is made of.
+    private static void PaintNumber(
+        ImDrawListPtr drawList, Vector2 min, float size, string text, bool selected, bool hovered,
+        bool glow = true)
+    {
+        Cell.Paint(drawList, min, min + new Vector2(size, size), selected, hovered, glow);
+
+        var textSize = ImGui.CalcTextSize(text);
+
+        drawList.AddText(
+            min + ((new Vector2(size, size) - textSize) / 2f),
+            Col.U32(Cell.Ink(selected, hovered)), text);
+    }
+
+    /// A switch over one byte's top bit, for the flags that share a byte with a value.
+    private void DrawFlagRow(string label, CustomizeIndex index, bool marked)
+    {
+        var set = draft!;
+        var on = (set[index] & Appearance.FlagBit) != 0;
+
+        Setting(label, marked ? index : null, Sp.Px(ToggleDesign), EchoToggle.Height, () =>
+        {
+            var wanted = on;
+
+            if (!EchoToggle.Draw($"##flag{index}", string.Empty, ref wanted))
+                return;
+
+            set[index] = wanted
+                ? (byte)(set[index] | Appearance.FlagBit)
+                : (byte)(set[index] & ~Appearance.FlagBit);
+
+            Touch();
+        });
+    }
+
+    /// The same row over a plain bit rather than a byte's flag.
+    private void DrawBitRow(string label, CustomizeIndex index, int bit, bool marked)
+    {
+        var set = draft!;
+
+        Setting(label, marked ? index : null, Sp.Px(ToggleDesign), EchoToggle.Height, () =>
+        {
+            var value = set[index];
+            var on = (value & (1 << bit)) != 0;
+
+            if (!EchoToggle.Draw($"##bit{index}_{bit}", string.Empty, ref on))
+                return;
+
+            set[index] = on
+                ? (byte)(value | (1 << bit))
+                : (byte)(value & ~(1 << bit));
+
+            Touch();
+        });
+    }
+
+    /// One plate showing the current colour, which opens the palette when clicked.
+    private void DrawColour(string label, CustomizeIndex index)
+    {
+        var set = draft!;
+        var swatches = ColourPalette.For(index, set[CustomizeIndex.Tribe], set[CustomizeIndex.Sex]);
+
+        if (swatches.Count == 0)
+        {
+            DrawSlider(label, index, 255);
+            return;
+        }
+
+        var width = Sp.Px(PlateDesign);
+        var height = Metrics.RowTall;
+        var current = set[index];
+        var colour = ColourFor(swatches, current);
+
+        Setting(label, index, width, height, () =>
+        {
+            var drawList = ImGui.GetWindowDrawList();
+            var origin = ImGui.GetCursorScreenPos();
+            var max = origin + new Vector2(width, height);
+
+            var clicked = ImGui.InvisibleButton(
+                $"##swatch{index}", new Vector2(width, height), ImGuiButtonFlags.MouseButtonLeft);
+
+            var hovered = ImGui.IsItemHovered();
+
+            if (clicked)
+                ImGui.OpenPopup($"##palette{index}");
+
+            if (hovered)
+            {
+                ImGui.SetMouseCursor(ImGuiMouseCursor.Hand);
+                UiHelpers.WrappedTooltip($"{label}  {Hex(colour)}\n\nClick to change.");
+            }
+
+            drawList.AddRectFilled(origin, max, Col.U32(Col.Sunken), Rad.Ctl);
+
+            var inset = Sp.Xxs;
+
+            drawList.AddRectFilled(
+                origin + new Vector2(inset, inset), max - new Vector2(inset, inset),
+                Col.U32(colour), Rad.Ctl * 0.6f);
+
+            drawList.AddRect(
+                origin, max,
+                Col.U32(hovered ? Theme.Accent : Col.EdgeRest with { W = 0.6f }),
+                Rad.Ctl, ImDrawFlags.None, hovered ? Stroke.Edge : Stroke.Hair);
+        });
+
+        DrawPalette(label, index, swatches);
     }
 
     /// A slider that says what it is set to.
-    private void DrawSlider(IReadOnlyList<CharaMakeMenu> menus, CustomizeIndex index, string label)
+    private void DrawSlider(string label, CustomizeIndex index, int max)
     {
-        var scale = UiHelpers.Scale;
         var set = draft!;
-        var menu = CharaMake.Menu(menus, index);
-        var max = menu is { Count: > 1 } ? menu.Count - 1 : 255;
+        var flagged = Appearance.HasFlagBit(index);
+        var ceiling = flagged ? Math.Min(max, 0x7F) : max;
 
-        var value = (int)set[index];
-        var left = ImGui.GetCursorPosX();
+        var value = (int)ValueOf(set, index);
+        var at = ImGui.GetCursorScreenPos();
 
-        var reading = $"{value}";
-        var readingWidth = ImGui.CalcTextSize(reading).X;
+        var head = Head(at, label, null, index, value.ToString());
 
-        ImGui.TextColored(Theme.TextDim, label);
-        ImGui.SameLine(0f, 0f);
-        ImGui.SetCursorPosX(left + MathF.Max(0f, contentWidth - readingWidth));
-        ImGui.TextColored(Theme.Text, reading);
+        ImGui.SetCursorScreenPos(new Vector2(fieldLeft, at.Y + head));
 
-        ImGui.SetCursorPosX(left);
-        ImGui.Dummy(new Vector2(0f, LabelGap * scale));
-        ImGui.SetCursorPosX(left);
-
-        if (EchoSlider.DrawInt($"##slider{index}", ref value, 0, max, width: contentWidth, format: "{0:0}"))
+        if (EchoSlider.DrawInt($"##slider{index}", ref value, 0, ceiling, width: content, format: "{0:0}"))
         {
-            set[index] = (byte)Math.Clamp(value, 0, 255);
+            SetValue(set, index, (byte)Math.Clamp(value, 0, ceiling));
             Touch();
         }
 
-        ImGui.SetCursorPosX(left);
-        ImGui.Dummy(new Vector2(0f, RowGap * scale));
+        var bottom = ImGui.GetItemRectMax().Y;
+
+        ImGui.SetCursorScreenPos(new Vector2(fieldLeft, bottom + Sp.Lg));
     }
 
-    private void DrawLayoutFailure()
+    /// The same slider, with its range taken from the game's own menu where there is one.
+    private void DrawMenuSlider(IReadOnlyList<CharaMakeMenu> menus, CustomizeIndex index, string label)
     {
-        var scale = UiHelpers.Scale;
+        var menu = CharaMake.Menu(menus, index);
 
-        ImGui.Dummy(new Vector2(0f, 20f * scale));
-        Theme.SectionHeader("Appearance editing is switched off");
-        ImGui.Dummy(new Vector2(0f, 6f * scale));
-
-        ImGui.PushTextWrapPos(ImGui.GetContentRegionAvail().X);
-        ImGui.TextColored(Theme.Bad,
-            "The twenty-six bytes that describe a character no longer sit where EchoGlam expects.");
-        ImGui.Dummy(new Vector2(0f, 6f * scale));
-        ImGui.TextUnformatted(
-            "This is checked against the game on startup, and the check failed - most likely because " +
-            "a game update moved them. Editing anyway would mean writing to bytes whose meaning is " +
-            "unknown, which is a good way to break a character rather than a reduced feature, so the " +
-            "editor stays off until it is corrected. Your gear is unaffected.");
-        ImGui.PopTextWrapPos();
+        DrawSlider(label, index, menu is { Count: > 1 } ? menu.Count - 1 : 255);
     }
 
-    /// The appearance's own undo, and a line saying whose face is on the character.
-    private void DrawHeader()
+    /// Every race as a named tile, in the material the option grids are made of.
+    private void DrawRaceGrid()
     {
-        var scale = UiHelpers.Scale;
-        var height = 26f * scale;
+        var races = RaceNames.All;
 
-        if (EchoButton.Draw(
-                "##appearancereset", "Revert Appearance", new Vector2(0f, height),
-                iconFont: plugin.Fonts.Icon, icon: FontAwesomeIcon.UndoAlt,
-                enabled: Wardrobe.HasAppearanceOverride,
-                tooltip: "Puts your own face back and leaves your gear alone. Revert All in the toolbar takes both."))
+        if (races.Length == 0)
         {
-            Wardrobe.ClearAppearance();
-            draft = null;
-            dirty = false;
+            DrawSlider("Race", CustomizeIndex.Race, 255);
+            return;
         }
 
-        ImGui.SameLine(0f, 10f * scale);
-        ImGui.AlignTextToFramePadding();
+        var set = draft!;
+        var at = ImGui.GetCursorScreenPos();
+        var head = Head(at, "Race", races.Length, CustomizeIndex.Race);
 
-        if (dirty)
-            ImGui.TextColored(Theme.TextDim, "Applying...");
-        else if (Wardrobe.HasAppearanceOverride)
-            ImGui.TextColored(Theme.Accent, "Appearance overridden.");
-        else
-            ImGui.TextColored(Theme.TextDim, "Your own appearance.");
+        var height = Metrics.RowTall;
+        var step = Sp.Xs;
+        var minimum = Sp.Px(RaceTileDesign);
+
+        var perRow = Math.Max(1, (int)((content + step) / (minimum + step)));
+        var tile = (content - ((perRow - 1) * step)) / perRow;
+        var rows = (races.Length + perRow - 1) / perRow;
+
+        var drawList = ImGui.GetWindowDrawList();
+        var top = at.Y + head;
+
+        for (var i = 0; i < races.Length; i++)
+        {
+            var (id, name) = races[i];
+
+            var min = new Vector2(
+                fieldLeft + ((i % perRow) * (tile + step)),
+                top + ((i / perRow) * (height + step)));
+
+            var selected = id == set[CustomizeIndex.Race];
+
+            ImGui.SetCursorScreenPos(min);
+
+            var clicked = ImGui.InvisibleButton(
+                $"##race{id}", new Vector2(tile, height), ImGuiButtonFlags.MouseButtonLeft);
+
+            var hovered = ImGui.IsItemHovered();
+
+            if (hovered)
+                ImGui.SetMouseCursor(ImGuiMouseCursor.Hand);
+
+            if (clicked && !selected)
+            {
+                set[CustomizeIndex.Race] = id;
+
+                set[CustomizeIndex.Tribe] = (byte)(((id - 1) * 2) + 1);
+
+                Reconcile();
+                Touch();
+            }
+
+            Cell.Paint(drawList, min, min + new Vector2(tile, height), selected, hovered);
+
+            var room = MathF.Max(Sp.Xs, tile - (Sp.Md * 2f));
+            var text = Text.Truncate(name, room);
+
+            drawList.AddText(
+                new Vector2(
+                    min.X + ((tile - Text.Width(text)) / 2f),
+                    min.Y + ((height - ImGui.GetTextLineHeight()) / 2f)),
+                Col.U32(Cell.Ink(selected, hovered)), text);
+        }
+
+        ImGui.SetCursorScreenPos(
+            new Vector2(fieldLeft, top + (rows * height) + ((rows - 1) * step) + Sp.Lg));
     }
+
+    /// A row whose control is a segmented choice.
+    private int DrawSegment(
+        string id, string label, ReadOnlySpan<string> labels, int selected, CustomizeIndex index)
+    {
+        var drawList = ImGui.GetWindowDrawList();
+        var at = ImGui.GetCursorScreenPos();
+        var line = ImGui.GetTextLineHeight();
+
+        var segment = EchoSegment.Width(labels);
+        var height = MathF.Max(Metrics.RowTall, MarkRoom);
+
+        drawList.AddText(
+            new Vector2(fieldLeft, at.Y + ((height - line) / 2f)),
+            Col.U32(Col.TextDim),
+            Text.Truncate(label, MathF.Max(Sp.Xl, content - segment - Sp.Xl)));
+
+        ImGui.SetCursorScreenPos(new Vector2(fieldLeft + content - segment, at.Y));
+
+        var picked = EchoSegment.Draw(id, labels, selected, height);
+
+        DrawMark(index, at.Y + ((height - MarkRoom) / 2f));
+
+        ImGui.SetCursorScreenPos(new Vector2(fieldLeft, at.Y + height + Sp.Lg));
+
+        return picked;
+    }
+
+    /// Lays a run of equal cells across the width, flush to both edges.
+    private static (int PerRow, float Gap) Spread(float width, float cell, float gap, int count)
+    {
+        var perRow = Math.Max(1, (int)((width + gap) / (cell + gap)));
+
+        if (count < perRow || perRow < 2)
+            return (perRow, gap);
+
+        var used = (perRow * cell) + ((perRow - 1) * gap);
+        var slack = MathF.Max(0f, width - used);
+
+        return (perRow, gap + (slack / (perRow - 1)));
+    }
+
+    /// The palette itself, in a popup so it floats free of the row holding it.
+    private void DrawPalette(
+        string label, CustomizeIndex index, IReadOnlyList<(byte Value, Vector4 Colour)> swatches)
+    {
+        if (!ImGui.BeginPopup($"##palette{index}"))
+            return;
+
+        var size = Sp.Px(SwatchDesign);
+        var gap = Sp.Xs;
+
+        const int perRow = 12;
+
+        var width = (size * perRow) + (gap * (perRow - 1));
+        var drawList = ImGui.GetWindowDrawList();
+        var head = ImGui.GetCursorScreenPos();
+
+        using (Text.PushCaption())
+            Text.Tracked(drawList, head, label.ToUpperInvariant(), Col.U32(Col.TextMuted), 1.8f, width);
+
+        var top = head.Y + (Text.CaptionSize * 1.15f) + Sp.Md;
+
+        var set = draft!;
+        var current = set[index];
+
+        for (var i = 0; i < swatches.Count; i++)
+        {
+            var (value, colour) = swatches[i];
+            var selected = value == current;
+
+            var min = new Vector2(
+                head.X + ((i % perRow) * (size + gap)),
+                top + ((i / perRow) * (size + gap)));
+
+            ImGui.SetCursorScreenPos(min);
+
+            var clicked = ImGui.InvisibleButton(
+                $"##{index}_c{i}", new Vector2(size, size), ImGuiButtonFlags.MouseButtonLeft);
+
+            var hovered = ImGui.IsItemHovered();
+
+            if (clicked)
+            {
+                set[index] = value;
+                Touch();
+                ImGui.CloseCurrentPopup();
+            }
+
+            if (hovered)
+            {
+                ImGui.SetMouseCursor(ImGuiMouseCursor.Hand);
+                UiHelpers.WrappedTooltip(Hex(colour));
+            }
+
+            Vector4? ring = null;
+
+            if (selected)
+                ring = Theme.Accent;
+            else if (hovered)
+                ring = new Vector4(1f, 1f, 1f, 0.85f);
+
+            UiHelpers.DrawSwatch(drawList, min, size, colour, ring);
+        }
+
+        var rows = (swatches.Count + perRow - 1) / perRow;
+
+        ImGui.SetCursorScreenPos(head);
+        ImGui.Dummy(new Vector2(width, (top - head.Y) + (rows * (size + gap))));
+
+        ImGui.EndPopup();
+    }
+
+
+    /// Your own appearance, sampled once a frame.
+    private CustomizeSet? baseline;
+
+    private int baselineFrame = -1;
+
+    private CustomizeSet? Baseline()
+    {
+        var frame = ImGui.GetFrameCount();
+
+        if (baselineFrame == frame)
+            return baseline;
+
+        baselineFrame = frame;
+        baseline = Wardrobe.BaseAppearance;
+
+        return baseline;
+    }
+
+    /// Whether one field differs from the character you actually have.
+    private bool ChangedAt(CustomizeIndex index) =>
+        Baseline() is { } mine && draft is { } set && set[index] != mine[index];
+
+    /// How many bytes in one part differ from your own.
+    private int ChangesIn(PartSpec spec)
+    {
+        if (Baseline() is not { } mine || draft is not { } set)
+            return 0;
+
+        var count = 0;
+
+        foreach (var index in spec.Bytes)
+        {
+            if (set[index] != mine[index])
+                count++;
+        }
+
+        return count;
+    }
+
+    /// How many differ across the whole appearance, or null when there is nothing to compare against.
+    private int? Changes()
+    {
+        if (Baseline() is null || draft is null)
+            return null;
+
+        var count = 0;
+
+        foreach (var spec in Parts)
+            count += ChangesIn(spec);
+
+        return count;
+    }
+
+    /// Puts one byte back to the character's own, and leaves the other twenty-five alone.
+    private void RevertField(CustomizeIndex index)
+    {
+        if (Baseline() is not { } mine || draft is not { } set)
+            return;
+
+        set[index] = mine[index];
+        Touch();
+    }
+
 
     /// Pushes the draft once the user has stopped fiddling with it.
     private void CommitIfSettled()
@@ -455,103 +1309,66 @@ public sealed class AppearanceEditor
     private IReadOnlyList<CharaMakeMenu> Menus()
     {
         var set = draft!;
+
         return CharaMake.For(set[CustomizeIndex.Race], set[CustomizeIndex.Tribe], set[CustomizeIndex.Sex]);
     }
 
-    /// Draws whichever control this field's menu asks for, falling back to a slider when the game has no menu
-    /// for it.
-    private void DrawMenu(
-        IReadOnlyList<CharaMakeMenu> menus, CustomizeIndex index, string label, Action? trailing = null)
-    {
-        var menu = CharaMake.Menu(menus, index);
-
-        if (menu == null || menu.Options.Count == 0)
-        {
-            DrawByte(label, index, trailing: trailing);
-            return;
-        }
-
-        if (menu.Options.Any(o => o.IconId != 0))
-            DrawIconGrid(menu, label, trailing);
-        else
-            DrawChips(menu, label, trailing);
-    }
-
-    /// A field's heading: dim label, an optional count, and whatever belongs beside it.
-    private static void DrawFieldLabel(string label, int? count, Action? trailing)
-    {
-        var text = count is { } n ? $"{label}  ({n})" : label;
-
-        if (trailing == null)
-        {
-            ImGui.TextColored(Theme.TextDim, text);
-            return;
-        }
-
-        var lineHeight = ImGui.GetTextLineHeight();
-        var toggleHeight = EchoToggle.Height;
-        var rowHeight = MathF.Max(lineHeight, toggleHeight);
-        var top = ImGui.GetCursorPosY();
-
-        ImGui.SetCursorPosY(top + ((rowHeight - lineHeight) / 2f));
-        ImGui.TextColored(Theme.TextDim, text);
-
-        ImGui.SameLine(0f, 14f * UiHelpers.Scale);
-        ImGui.SetCursorPosY(top + ((rowHeight - toggleHeight) / 2f));
-        trailing();
-
-        ImGui.SetCursorPosY(top + rowHeight);
-    }
-
-    /// Width of a bare switch, for right-aligning one against a label.
-    private const float ToggleWidth = 38f;
-
-    /// A switch over one byte's top bit, for the flags that share a byte with a value.
-    private void DrawFlagToggle(string id, string label, CustomizeIndex index)
+    /// Puts any value the new race, clan or gender does not offer back to the game's own default.
+    private void Reconcile()
     {
         var set = draft!;
-        var on = (set[index] & Appearance.FlagBit) != 0;
 
-        if (!EchoToggle.Draw(id, label, ref on))
-            return;
-
-        set[index] = on
-            ? (byte)(set[index] | Appearance.FlagBit)
-            : (byte)(set[index] & ~Appearance.FlagBit);
-
-        Touch();
-    }
-
-    /// A full-width row: name on the left, switch pinned right.
-    private void DrawToggleRow(string label, CustomizeIndex index)
-    {
-        var scale = UiHelpers.Scale;
-
-        DrawRightAligned(label, ToggleWidth * scale, EchoToggle.Height,
-            () => DrawFlagToggle($"##flag{index}", string.Empty, index));
-    }
-
-    /// The same row, over a plain bit rather than a byte's flag - the facial features.
-    private void DrawBitRow(string label, CustomizeIndex index, int bit)
-    {
-        var scale = UiHelpers.Scale;
-        var set = draft!;
-
-        DrawRightAligned(label, ToggleWidth * scale, EchoToggle.Height, () =>
+        foreach (var menu in Menus())
         {
-            var value = set[index];
-            var on = (value & (1 << bit)) != 0;
+            if (menu.Index is CustomizeIndex.Race or CustomizeIndex.Tribe or CustomizeIndex.Sex)
+                continue;
 
-            if (!EchoToggle.Draw($"##bit{index}_{bit}", string.Empty, ref on))
-                return;
+            if (menu.Kind == CharaMakeKind.Colour)
+            {
+                var swatches = ColourPalette.For(
+                    menu.Index, set[CustomizeIndex.Tribe], set[CustomizeIndex.Sex]);
 
-            set[index] = on
-                ? (byte)(value | (1 << bit))
-                : (byte)(value & ~(1 << bit));
+                if (swatches.Count == 0)
+                    continue;
 
-            Touch();
-        });
+                var held = set[menu.Index];
+                var known = false;
+
+                foreach (var (value, _) in swatches)
+                {
+                    if (value != held)
+                        continue;
+
+                    known = true;
+                    break;
+                }
+
+                if (!known)
+                    set[menu.Index] = menu.Initial;
+
+                continue;
+            }
+
+            if (menu.Options.Count == 0)
+                continue;
+
+            var current = ValueOf(set, menu.Index);
+            var offered = false;
+
+            foreach (var option in menu.Options)
+            {
+                if (option.Value != current)
+                    continue;
+
+                offered = true;
+                break;
+            }
+
+            if (!offered)
+                SetValue(set, menu.Index, menu.Initial);
+        }
     }
+
 
     /// The value in a byte, with any flag bit taken off.
     private static byte ValueOf(CustomizeSet set, CustomizeIndex index) =>
@@ -565,290 +1382,25 @@ public sealed class AppearanceEditor
             : value;
     }
 
-    /// Side of a picture option, in design units.
-    private const float OptionIconDesign = 50f;
-
-    private void DrawIconGrid(CharaMakeMenu menu, string label, Action? trailing = null)
+    /// The two clans belonging to a race, named for the gender being edited.
+    private static List<(byte Value, string Name)> TribesFor(byte race, byte sex)
     {
-        var scale = UiHelpers.Scale;
-        var size = OptionIconDesign * scale;
-        var set = draft!;
+        List<(byte, string)> names = [];
 
-        DrawStacked(label, menu.Options.Count, trailing, () =>
+        if (race == 0)
+            return names;
+
+        var first = (byte)(((race - 1) * 2) + 1);
+
+        for (var id = first; id <= first + 1; id++)
         {
-            var (perRow, gap) = GridMetrics(size, 5f * scale, menu.Options.Count);
-            var drawList = ImGui.GetWindowDrawList();
-            var current = ValueOf(set, menu.Index);
-            var rounding = 5f * scale;
+            var name = RaceNames.Tribe(id, sex);
 
-            ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new Vector2(gap, 5f * scale));
-
-            for (var i = 0; i < menu.Options.Count; i++)
-            {
-                if (i % perRow != 0)
-                    ImGui.SameLine(0f, gap);
-
-                var option = menu.Options[i];
-                var origin = ImGui.GetCursorScreenPos();
-                var selected = option.Value == current;
-
-                var clicked = ImGui.InvisibleButton($"##{menu.Index}_{i}", new Vector2(size, size), ImGuiButtonFlags.MouseButtonLeft);
-                var hovered = ImGui.IsItemHovered();
-
-                if (clicked)
-                {
-                    SetValue(set, menu.Index, option.Value);
-                    Touch();
-                }
-
-                if (hovered)
-                    UiHelpers.WrappedTooltip($"{label} {option.Value}");
-
-                var max = origin + new Vector2(size, size);
-
-                drawList.AddRectFilled(
-                    origin, max,
-                    ImGui.GetColorU32(selected ? Theme.Tinted(0.26f) : hovered ? Theme.Tinted(0.14f) : Theme.Background),
-                    rounding);
-
-                var texture = Plugin.TextureProvider.GetFromGameIcon(new GameIconLookup(option.IconId)).GetWrapOrDefault();
-                if (texture != null)
-                {
-                    var inset = 3f * scale;
-                    drawList.AddImage(texture.Handle, origin + new Vector2(inset, inset), max - new Vector2(inset, inset));
-                }
-
-                drawList.AddRect(
-                    origin, max,
-                    ImGui.GetColorU32(selected
-                        ? Theme.Accent
-                        : new Vector4(1f, 1f, 1f, hovered ? 0.22f : 0.07f)),
-                    rounding, ImDrawFlags.None, (selected ? 2f : 1f) * scale);
-            }
-
-            ImGui.PopStyleVar();
-        });
-    }
-
-    /// A row of numbered chips, for the short lists the game gives no pictures for.
-    private void DrawChips(CharaMakeMenu menu, string label, Action? trailing = null)
-    {
-        var scale = UiHelpers.Scale;
-        var size = 30f * scale;
-        var set = draft!;
-
-        DrawStacked(label, menu.Options.Count, trailing, () =>
-        {
-            var (perRow, gap) = GridMetrics(size, 5f * scale, menu.Options.Count);
-            var drawList = ImGui.GetWindowDrawList();
-            var current = ValueOf(set, menu.Index);
-            var rounding = 5f * scale;
-
-            ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new Vector2(gap, 5f * scale));
-
-            for (var i = 0; i < menu.Options.Count; i++)
-            {
-                if (i % perRow != 0)
-                    ImGui.SameLine(0f, gap);
-
-                var option = menu.Options[i];
-                var origin = ImGui.GetCursorScreenPos();
-                var selected = option.Value == current;
-
-                var clicked = ImGui.InvisibleButton($"##{menu.Index}_chip{i}", new Vector2(size, size), ImGuiButtonFlags.MouseButtonLeft);
-                var hovered = ImGui.IsItemHovered();
-
-                if (clicked)
-                {
-                    SetValue(set, menu.Index, option.Value);
-                    Touch();
-                }
-
-                var max = origin + new Vector2(size, size);
-
-                drawList.AddRectFilled(
-                    origin, max,
-                    ImGui.GetColorU32(selected ? Theme.Tinted(0.26f) : hovered ? Theme.Tinted(0.14f) : Theme.Background),
-                    rounding);
-
-                drawList.AddRect(
-                    origin, max,
-                    ImGui.GetColorU32(selected
-                        ? Theme.Accent
-                        : new Vector4(1f, 1f, 1f, hovered ? 0.22f : 0.07f)),
-                    rounding, ImDrawFlags.None, (selected ? 2f : 1f) * scale);
-
-                var text = (i + 1).ToString();
-                var textSize = ImGui.CalcTextSize(text);
-                drawList.AddText(
-                    origin + ((new Vector2(size, size) - textSize) / 2f),
-                    ImGui.GetColorU32(selected ? Theme.Accent : Theme.TextDim), text);
-            }
-
-            ImGui.PopStyleVar();
-        });
-    }
-
-    /// Side of a colour swatch, in design units.
-    private const float SwatchDesign = 26f;
-
-    /// One swatch showing the current colour, which opens the palette when clicked.
-    private void DrawColour(string label, CustomizeIndex index)
-    {
-        var set = draft!;
-        var swatches = ColourPalette.For(index, set[CustomizeIndex.Tribe], set[CustomizeIndex.Sex]);
-
-        if (swatches.Count == 0)
-        {
-            DrawByte(label, index);
-            return;
+            if (!string.IsNullOrWhiteSpace(name))
+                names.Add((id, name));
         }
 
-        var scale = UiHelpers.Scale;
-        var height = SwatchDesign * scale;
-        var width = 46f * scale;
-        var current = set[index];
-        var colour = ColourFor(swatches, current);
-
-        DrawRightAligned(label, width, height, () =>
-        {
-            var origin = ImGui.GetCursorScreenPos();
-            var drawList = ImGui.GetWindowDrawList();
-            var max = origin + new Vector2(width, height);
-            var rounding = 4f * scale;
-
-            var clicked = ImGui.InvisibleButton($"##swatch{index}", new Vector2(width, height), ImGuiButtonFlags.MouseButtonLeft);
-            var hovered = ImGui.IsItemHovered();
-
-            if (clicked)
-                ImGui.OpenPopup($"##palette{index}");
-
-            drawList.AddRectFilled(origin, max, ImGui.GetColorU32(Theme.Background), rounding);
-
-            var inset = 2f * scale;
-            drawList.AddRectFilled(
-                origin + new Vector2(inset, inset), max - new Vector2(inset, inset),
-                ImGui.GetColorU32(colour), rounding * 0.6f);
-
-            drawList.AddRect(
-                origin, max,
-                ImGui.GetColorU32(hovered ? Theme.Accent : new Vector4(1f, 1f, 1f, 0.12f)),
-                rounding, ImDrawFlags.None, (hovered ? 2f : 1f) * scale);
-
-            if (hovered)
-                UiHelpers.WrappedTooltip($"{label} {current}\n{Hex(colour)}\n\nClick to change.");
-        });
-
-        DrawPalettePopup(label, index, swatches);
-    }
-
-    /// A dim label on the left of the block and something pinned to its right edge.
-    private void DrawRightAligned(string label, float width, float height, Action draw)
-    {
-        var scale = UiHelpers.Scale;
-        var gap = 8f * scale;
-        var left = ImGui.GetCursorPosX();
-        var top = ImGui.GetCursorPosY();
-        var labelWidth = ImGui.CalcTextSize(label).X;
-
-        var lineHeight = ImGui.GetTextLineHeight();
-        var rowHeight = MathF.Max(lineHeight, height);
-
-        ImGui.SetCursorPosY(top + ((rowHeight - lineHeight) / 2f));
-        ImGui.TextColored(Theme.TextDim, label);
-        ImGui.SameLine(0f, 0f);
-
-        ImGui.SetCursorPosX(left + MathF.Max(labelWidth + gap, contentWidth - width));
-        ImGui.SetCursorPosY(top + ((rowHeight - height) / 2f));
-        draw();
-
-        ImGui.SetCursorPos(new Vector2(left, top + rowHeight + (RowGap * scale)));
-    }
-
-    /// A label with its control on the line below - for grids and sliders, which want the whole width.
-    private void DrawStacked(string label, int? count, Action? trailing, Action draw)
-    {
-        var scale = UiHelpers.Scale;
-        var left = ImGui.GetCursorPosX();
-
-        DrawFieldLabel(label, count, trailing);
-        ImGui.Dummy(new Vector2(0f, LabelGap * scale));
-        ImGui.SetCursorPosX(left);
-
-        draw();
-
-        ImGui.SetCursorPosX(left);
-        ImGui.Dummy(new Vector2(0f, RowGap * scale));
-    }
-
-    /// Lays a run of equal cells across the full content width, flush to both edges.
-    private (int PerRow, float Gap) GridMetrics(float cell, float gap, int count)
-    {
-        var perRow = Math.Max(1, (int)((contentWidth + gap) / (cell + gap)));
-
-        if (count < perRow || perRow < 2)
-            return (perRow, gap);
-
-        var used = (perRow * cell) + ((perRow - 1) * gap);
-        var slack = MathF.Max(0f, contentWidth - used);
-
-        return (perRow, gap + (slack / (perRow - 1)));
-    }
-
-    /// The palette itself, in a popup so it floats free of the block holding it.
-    private void DrawPalettePopup(string label, CustomizeIndex index, IReadOnlyList<(byte Value, Vector4 Colour)> swatches)
-    {
-        if (!ImGui.BeginPopup($"##palette{index}"))
-            return;
-
-        var scale = UiHelpers.Scale;
-        var size = SwatchDesign * scale;
-        var gap = 4f * scale;
-
-        const int perRow = 12;
-
-        Theme.SectionHeader(label, ruleWidth: (size * perRow) + (gap * (perRow - 1)));
-        ImGui.Dummy(new Vector2(0f, 4f * scale));
-
-        var drawList = ImGui.GetWindowDrawList();
-        var set = draft!;
-        var current = set[index];
-
-        for (var i = 0; i < swatches.Count; i++)
-        {
-            if (i % perRow != 0)
-                ImGui.SameLine(0f, gap);
-
-            var (value, colour) = swatches[i];
-            var origin = ImGui.GetCursorScreenPos();
-            var selected = value == current;
-
-            var clicked = ImGui.InvisibleButton($"##{index}_c{i}", new Vector2(size, size), ImGuiButtonFlags.MouseButtonLeft);
-            var hovered = ImGui.IsItemHovered();
-
-            if (clicked)
-            {
-                set[index] = value;
-                Touch();
-                ImGui.CloseCurrentPopup();
-            }
-
-            if (hovered)
-                UiHelpers.WrappedTooltip($"{value}\n{Hex(colour)}");
-
-            drawList.AddRectFilled(origin, origin + new Vector2(size, size), ImGui.GetColorU32(colour), 4f * scale);
-
-            var ring = selected
-                ? Theme.Accent
-                : new Vector4(1f, 1f, 1f, hovered ? 0.55f : 0.15f);
-
-            drawList.AddRect(
-                origin, origin + new Vector2(size, size), ImGui.GetColorU32(ring),
-                4f * scale, ImDrawFlags.None, (selected ? 2.5f : 1f) * scale);
-        }
-
-        ImGui.Dummy(new Vector2(0f, 4f * scale));
-        ImGui.EndPopup();
+        return names;
     }
 
     /// The colour for a stored value, or a dark grey when the value is not in the palette - which happens on
@@ -866,138 +1418,4 @@ public sealed class AppearanceEditor
 
     private static string Hex(Vector4 colour) =>
         $"#{(int)(colour.X * 255):X2}{(int)(colour.Y * 255):X2}{(int)(colour.Z * 255):X2}";
-
-    /// A labelled byte slider that marks the draft dirty when moved.
-    private void DrawByte(string label, CustomizeIndex index, int max = 255, Action? trailing = null)
-    {
-        var scale = UiHelpers.Scale;
-        var set = draft!;
-        var flagged = Appearance.HasFlagBit(index);
-
-        DrawFieldLabel(label, null, trailing);
-
-        var stored = set[index];
-        var value = flagged ? stored & 0x7F : stored;
-
-        if (EchoSlider.DrawInt($"##{index}", ref value, 0, flagged ? Math.Min(max, 0x7F) : max, width: contentWidth, format: "{0:0}"))
-        {
-            var clamped = (byte)Math.Clamp(value, 0, flagged ? 0x7F : 255);
-
-            set[index] = flagged
-                ? (byte)((stored & Appearance.FlagBit) | clamped)
-                : clamped;
-
-            Touch();
-        }
-
-        ImGui.Dummy(new Vector2(0f, 2f * scale));
-    }
-
-    /// A labelled dropdown over (value, name) pairs.
-    private bool DrawCombo(
-        string label, IReadOnlyList<(byte Value, string Name)> options, byte current, out byte chosen)
-    {
-        chosen = current;
-
-        var left = ImGui.GetCursorPosX();
-        ImGui.TextColored(Theme.TextDim, label);
-        ImGui.Dummy(new Vector2(0f, LabelGap * UiHelpers.Scale));
-        ImGui.SetCursorPosX(left);
-
-        ImGui.SetNextItemWidth(contentWidth);
-
-        var currentName = "Unknown";
-        foreach (var (value, name) in options)
-        {
-            if (value == current)
-            {
-                currentName = name;
-                break;
-            }
-        }
-
-        var picked = false;
-
-        if (ImGui.BeginCombo($"##{label}", currentName))
-        {
-            foreach (var (value, name) in options)
-            {
-                if (ImGui.Selectable(name, value == current))
-                {
-                    chosen = value;
-                    picked = value != current;
-                }
-            }
-
-            ImGui.EndCombo();
-        }
-
-        ImGui.SetCursorPosX(left);
-        ImGui.Dummy(new Vector2(0f, RowGap * UiHelpers.Scale));
-        return picked;
-    }
-
-    private static readonly (byte Value, string Name)[] GenderNames =
-    [
-        (0, "Masculine"),
-        (1, "Feminine"),
-    ];
-
-    /// Race names off the game's own sheet, so they are whatever the client is running in rather than an
-    /// English list baked in here.
-    private static List<(byte Value, string Name)> RaceNames()
-    {
-        var names = new List<(byte, string)>();
-
-        try
-        {
-            foreach (var row in Plugin.DataManager.GetExcelSheet<LuminaRace>())
-            {
-                if (row.RowId is 0 or > byte.MaxValue)
-                    continue;
-
-                var name = row.Masculine.ExtractText();
-                if (!string.IsNullOrWhiteSpace(name))
-                    names.Add(((byte)row.RowId, name));
-            }
-        }
-        catch (Exception ex)
-        {
-            Plugin.Log.Error(ex, "[EchoGlam] Could not read the race sheet");
-        }
-
-        return names;
-    }
-
-    /// The two clans belonging to a race.
-    private static List<(byte Value, string Name)> TribeNamesFor(byte race)
-    {
-        var names = new List<(byte, string)>();
-
-        if (race == 0)
-            return names;
-
-        var first = (byte)(((race - 1) * 2) + 1);
-
-        try
-        {
-            var sheet = Plugin.DataManager.GetExcelSheet<LuminaTribe>();
-
-            for (byte id = first; id <= first + 1; id++)
-            {
-                if (!sheet.TryGetRow(id, out var row))
-                    continue;
-
-                var name = row.Masculine.ExtractText();
-                if (!string.IsNullOrWhiteSpace(name))
-                    names.Add((id, name));
-            }
-        }
-        catch (Exception ex)
-        {
-            Plugin.Log.Error(ex, "[EchoGlam] Could not read the tribe sheet");
-        }
-
-        return names;
-    }
 }

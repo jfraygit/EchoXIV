@@ -5,11 +5,12 @@ using System.Threading.Tasks;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Interface.Textures.TextureWraps;
 using EchoGlam.Game;
+using EchoGlam.UI.Foundation;
 
 namespace EchoGlam.UI.Controls;
 
 /// Drag to reposition, scroll to zoom, then confirm - the crop step every image upload goes through.
-public sealed class ImageCropDialog
+public sealed class ImageCropDialog : IDisposable
 {
     private const string PopupId = "##echoglamcrop";
 
@@ -36,6 +37,10 @@ public sealed class ImageCropDialog
     private float panX = 0.5f;
     private float panY = 0.5f;
     private float zoom = MinimumZoom;
+
+    /// How far the picture is turned clockwise, in degrees.
+    private float angle;
+
     private string? error;
     private bool working;
 
@@ -52,6 +57,7 @@ public sealed class ImageCropDialog
         panX = 0.5f;
         panY = 0.5f;
         zoom = MinimumZoom;
+        angle = 0f;
         error = null;
         working = false;
 
@@ -86,6 +92,8 @@ public sealed class ImageCropDialog
             openRequested = false;
         }
 
+        Modal.Centre();
+
         if (!ImGui.BeginPopup(PopupId))
         {
             IsOpen = false;
@@ -94,8 +102,9 @@ public sealed class ImageCropDialog
 
         IsOpen = true;
         var scale = UiHelpers.Scale;
+        var viewport = Viewport(scale);
 
-        Theme.SectionHeader(title, ruleWidth: MaximumViewportWidth * scale);
+        Theme.SectionHeader(title, ruleWidth: viewport.X);
         ImGui.Dummy(new Vector2(0f, 4f * scale));
         ImGui.TextColored(Theme.TextDim, "Drag to reposition, scroll to zoom.");
         ImGui.Dummy(new Vector2(0f, 8f * scale));
@@ -103,7 +112,10 @@ public sealed class ImageCropDialog
         if (error is { } message)
             ImGui.TextColored(Theme.Bad, message);
         else if (sourceTexture != null)
-            DrawCanvas(scale);
+            DrawCanvas(scale, viewport);
+
+        if (sourceTexture != null && error is null)
+            DrawAngle(scale, viewport.X);
 
         ImGui.Dummy(new Vector2(0f, 10f * scale));
 
@@ -119,12 +131,13 @@ public sealed class ImageCropDialog
 
         if (EchoButton.Draw(
                 "##cropreset", "Reset", new Vector2(0f, height),
-                enabled: panX != 0.5f || panY != 0.5f || zoom != MinimumZoom,
-                tooltip: "Back to the whole picture, centred."))
+                enabled: panX != 0.5f || panY != 0.5f || zoom != MinimumZoom || angle != 0f,
+                tooltip: "Back to the whole picture, upright and centred."))
         {
             panX = 0.5f;
             panY = 0.5f;
             zoom = MinimumZoom;
+            angle = 0f;
         }
 
         ImGui.SameLine(0f, 6f * scale);
@@ -137,7 +150,10 @@ public sealed class ImageCropDialog
 
             try
             {
-                onConfirmed?.Invoke(ImageProcessor.ToJpeg(sourcePath, targetWidth, targetHeight, panX, panY, zoom));
+                onConfirmed?.Invoke(
+                    ImageProcessor.ToJpeg(
+                        sourcePath, targetWidth, targetHeight, panX, panY, zoom, angle));
+
                 Close();
                 ImGui.CloseCurrentPopup();
             }
@@ -154,35 +170,65 @@ public sealed class ImageCropDialog
         ImGui.EndPopup();
     }
 
-    private void DrawCanvas(float scale)
+    /// How big the preview comes out, which the heading's rule also needs.
+    private Vector2 Viewport(float scale)
     {
-        var targetAspect = targetWidth / (float)targetHeight;
+        var targetAspect = targetWidth / (float)MathF.Max(1, targetHeight);
 
-        var viewportWidth = MaximumViewportWidth * scale;
-        var viewportHeight = viewportWidth / targetAspect;
+        var width = MaximumViewportWidth * scale;
+        var height = width / MathF.Max(0.01f, targetAspect);
 
-        if (viewportHeight > MaximumViewportHeight * scale)
+        if (height > MaximumViewportHeight * scale)
         {
-            viewportHeight = MaximumViewportHeight * scale;
-            viewportWidth = viewportHeight * targetAspect;
+            height = MaximumViewportHeight * scale;
+            width = height * targetAspect;
         }
 
-        var coverScale = MathF.Max(viewportWidth / sourceWidth, viewportHeight / sourceHeight);
+        return new Vector2(width, height);
+    }
+
+    private void DrawCanvas(float scale, Vector2 size)
+    {
+        var radians = angle * MathF.PI / 180f;
+        var cos = MathF.Cos(radians);
+        var sin = MathF.Sin(radians);
+
+        var footprintWidth = (size.X * MathF.Abs(cos)) + (size.Y * MathF.Abs(sin));
+        var footprintHeight = (size.X * MathF.Abs(sin)) + (size.Y * MathF.Abs(cos));
+
+        var coverScale = MathF.Max(footprintWidth / sourceWidth, footprintHeight / sourceHeight)
+                         * ImageProcessor.CoverMargin;
+
         var effective = coverScale * zoom;
 
         var scaledWidth = sourceWidth * effective;
         var scaledHeight = sourceHeight * effective;
-        var maxOffsetX = MathF.Max(0f, scaledWidth - viewportWidth);
-        var maxOffsetY = MathF.Max(0f, scaledHeight - viewportHeight);
+
+        var maxOffsetX = MathF.Max(0f, scaledWidth - footprintWidth);
+        var maxOffsetY = MathF.Max(0f, scaledHeight - footprintHeight);
 
         var origin = ImGui.GetCursorScreenPos();
-        var size = new Vector2(viewportWidth, viewportHeight);
+        var centre = origin + (size / 2f);
         var drawList = ImGui.GetWindowDrawList();
 
-        var imageMin = origin - new Vector2(panX * maxOffsetX, panY * maxOffsetY);
+        var slide = new Vector2((panX - 0.5f) * maxOffsetX, (panY - 0.5f) * maxOffsetY);
+        var half = new Vector2(scaledWidth / 2f, scaledHeight / 2f);
+
+        Vector2 Corner(float sx, float sy)
+        {
+            var p = new Vector2(sx * half.X, sy * half.Y) - slide;
+
+            return centre + new Vector2((p.X * cos) - (p.Y * sin), (p.X * sin) + (p.Y * cos));
+        }
 
         drawList.PushClipRect(origin, origin + size, true);
-        drawList.AddImage(sourceTexture!.Handle, imageMin, imageMin + new Vector2(scaledWidth, scaledHeight));
+
+        drawList.AddImageQuad(
+            sourceTexture!.Handle,
+            Corner(-1f, -1f), Corner(1f, -1f), Corner(1f, 1f), Corner(-1f, 1f),
+            new Vector2(0f, 0f), new Vector2(1f, 0f), new Vector2(1f, 1f), new Vector2(0f, 1f),
+            0xFFFFFFFFu);
+
         drawList.PopClipRect();
 
         ImGui.InvisibleButton("##cropcanvas", size, ImGuiButtonFlags.MouseButtonLeft);
@@ -212,11 +258,14 @@ public sealed class ImageCropDialog
         {
             var delta = ImGui.GetIO().MouseDelta;
 
+            var alongX = (delta.X * cos) + (delta.Y * sin);
+            var alongY = (delta.Y * cos) - (delta.X * sin);
+
             if (maxOffsetX > 0f)
-                panX = Math.Clamp(panX - (delta.X / maxOffsetX), 0f, 1f);
+                panX = Math.Clamp(panX - (alongX / maxOffsetX), 0f, 1f);
 
             if (maxOffsetY > 0f)
-                panY = Math.Clamp(panY - (delta.Y / maxOffsetY), 0f, 1f);
+                panY = Math.Clamp(panY - (alongY / maxOffsetY), 0f, 1f);
         }
 
         if (!hovered)
@@ -229,10 +278,57 @@ public sealed class ImageCropDialog
             zoom = Math.Clamp(zoom * MathF.Pow(ZoomPerTick, wheel), MinimumZoom, MaximumZoom);
     }
 
+    /// How far either way the angle may be taken, and how near a quarter turn counts as being at one.
+    private const float AngleLimit = 180f;
+
+    /// Inside this of a quarter turn, the slider sits on the quarter turn.
+    private const float SnapDegrees = 2.5f;
+
+    /// The angle, as a slider under the picture.
+    private void DrawAngle(float scale, float width)
+    {
+        var drawList = ImGui.GetWindowDrawList();
+        var origin = ImGui.GetCursorScreenPos();
+        var line = Text.CaptionSize * 1.4f;
+
+        var reading = $"{angle:0.#}°";
+
+        using (Text.PushCaption())
+        {
+            Text.Tracked(drawList, origin, "ROTATION", Col.U32(Col.TextMuted), 1.8f, width);
+
+            drawList.AddText(
+                new Vector2(origin.X + width - Text.Width(reading), origin.Y),
+                Col.U32(angle == 0f ? Col.TextMuted : Col.Text), reading);
+        }
+
+        ImGui.Dummy(new Vector2(width, line));
+
+        var wanted = angle;
+
+        if (EchoSlider.Draw(
+                "##cropangle", ref wanted, -AngleLimit, AngleLimit, width,
+                format: "{0:0.#}°", resetTo: 0f, ticks: [-90f, 0f, 90f]))
+        {
+            if (!ImGui.GetIO().KeyCtrl)
+            {
+                var nearest = MathF.Round(wanted / 90f) * 90f;
+
+                if (MathF.Abs(wanted - nearest) < SnapDegrees)
+                    wanted = nearest;
+            }
+
+            angle = Math.Clamp(wanted, -AngleLimit, AngleLimit);
+        }
+    }
+
     private void Close()
     {
         sourceTexture?.Dispose();
         sourceTexture = null;
         IsOpen = false;
     }
+
+    /// Releases the decoded source picture if the plugin is torn down with the dialog open.
+    public void Dispose() => Close();
 }

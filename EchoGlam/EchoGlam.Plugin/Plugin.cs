@@ -46,6 +46,9 @@ public sealed class Plugin : IDalamudPlugin
     /// The game's own right-click menu, where a friend is added from.
     [PluginService] internal static IContextMenu ContextMenu { get; private set; } = null!;
 
+    /// Forces the game's own pointer shape.
+    [PluginService] internal static IAddonEventManager AddonEvents { get; private set; } = null!;
+
     public Configuration Configuration { get; }
 
     public string Version { get; } =
@@ -53,6 +56,12 @@ public sealed class Plugin : IDalamudPlugin
 
     public readonly WindowSystem WindowSystem = new("EchoGlam");
     private readonly MainWindow mainWindow;
+
+    /// ASSIGNED IN THE CONSTRUCTOR, NOT HERE.
+    private readonly GameCursor gameCursor;
+
+    /// The diagnostics window, or null in a release build where it is never constructed.
+    public DebugWindow? Debug { get; }
 
     /// Header and icon fonts, shared with the rest of the suite - see UI/Fonts.
     public Fonts Fonts { get; }
@@ -180,12 +189,22 @@ public sealed class Plugin : IDalamudPlugin
         friendMenu = new FriendContextMenu(ContextMenu, this);
         Fonts = new Fonts(PluginInterface);
 
+        UI.Foundation.Text.Use(Fonts);
+
         if (Configuration.AccentColour is { } accent)
             Theme.ApplyAccent(accent);
 
+        gameCursor = new GameCursor(AddonEvents);
         mainWindow = new MainWindow(this);
         WindowSystem.AddWindow(mainWindow);
         mainWindow.IsOpen = Configuration.IsMainWindowOpen;
+
+        if (Build.Diagnostics)
+        {
+            Debug = new DebugWindow(this, Fonts);
+            WindowSystem.AddWindow(Debug);
+            Debug.IsOpen = Configuration.IsDebugWindowOpen;
+        }
 
         CommandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
         {
@@ -211,7 +230,13 @@ public sealed class Plugin : IDalamudPlugin
         Looks.ReleaseAll();
 
         Configuration.IsMainWindowOpen = mainWindow.IsOpen;
+
+        if (Debug is { } debug)
+            Configuration.IsDebugWindowOpen = debug.IsOpen;
+
         Configuration.Save();
+
+        gameCursor.Release();
 
         PluginInterface.UiBuilder.Draw -= DrawUi;
         PluginInterface.UiBuilder.OpenMainUi -= ToggleMainWindow;
@@ -224,6 +249,9 @@ public sealed class Plugin : IDalamudPlugin
 
         WindowSystem.RemoveAllWindows();
         mainWindow.Dispose();
+        Debug?.Dispose();
+
+        Fonts.Dispose();
         CommandManager.RemoveHandler(CommandName);
         CommandManager.RemoveHandler(ShortCommandName);
     }
@@ -290,9 +318,19 @@ public sealed class Plugin : IDalamudPlugin
             return;
 
         UiHelpers.SampleScale();
+
+        UI.Foundation.Text.Sample();
+
+        UI.Foundation.LayerStack.Reset();
+        UI.Foundation.Layout.Reset();
+
+        UI.Foundation.Motion.Sweep();
+
         WindowSystem.Draw();
 
         FileDialogs.Draw();
+
+        gameCursor.Update(mainWindow.IsOpen || Debug?.IsOpen == true);
     }
 
     private void ToggleMainWindow() => mainWindow.IsOpen = !mainWindow.IsOpen;

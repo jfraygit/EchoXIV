@@ -2,22 +2,28 @@ using System;
 using System.Collections.Generic;
 using System.Numerics;
 using Dalamud.Bindings.ImGui;
+using EchoGlam.UI.Foundation;
 
 namespace EchoGlam.UI;
 
-/// The shared Echo suite theme: the same dark look EchoMix, EchoSim and EchoNav use, so plugins in the suite
-/// read as siblings rather than unrelated tools.
+/// EchoGlam's palette and its ImGui style stack.
 public static class Theme
 {
-    public static readonly Vector4 Background = new(0.07f, 0.07f, 0.09f, 1f);
-    public static readonly Vector4 Panel = new(0.11f, 0.11f, 0.14f, 1f);
-    public static readonly Vector4 Text = new(0.92f, 0.92f, 0.95f, 1f);
-    public static readonly Vector4 Border = new(0.25f, 0.25f, 0.3f, 0.5f);
+    /// THE GROUND, AND IT IS NEARLY BLACK AS OF 2.0.
+    public static readonly Vector4 Background = new(0.026f, 0.022f, 0.034f, 1f);
+
+    /// A surface on the ground.
+    public static readonly Vector4 Panel = new(0.052f, 0.044f, 0.068f, 1f);
+
+    public static readonly Vector4 Text = new(0.94f, 0.93f, 0.96f, 1f);
+
+    /// The resting edge.
+    public static readonly Vector4 Border = new(0.42f, 0.38f, 0.50f, 0.22f);
 
     /// Muted text for labels, units and secondary detail.
-    public static readonly Vector4 TextDim = new(0.62f, 0.62f, 0.70f, 1f);
+    public static readonly Vector4 TextDim = new(0.64f, 0.62f, 0.70f, 1f);
 
-    public static readonly Vector4 TextDisabled = new(0.40f, 0.40f, 0.46f, 1f);
+    public static readonly Vector4 TextDisabled = new(0.40f, 0.38f, 0.46f, 1f);
 
     /// Orchid.
     public static readonly Vector4 DefaultAccent = new(0.90f, 0.44f, 0.76f, 1f);
@@ -34,16 +40,6 @@ public static class Theme
     public static Vector4 AccentSoft { get; private set; } =
         new(DefaultAccent.X, DefaultAccent.Y, DefaultAccent.Z, 0.35f);
 
-    /// Ready-made accents, so changing the look doesn't require a colour wheel.
-    public static readonly (string Name, Vector4 Colour)[] Presets =
-    [
-        ("Orchid", DefaultAccent),
-        ("Rose", new Vector4(0.98f, 0.46f, 0.52f, 1f)),
-        ("Violet", new Vector4(0.72f, 0.48f, 0.98f, 1f)),
-        ("Champagne", new Vector4(0.96f, 0.84f, 0.58f, 1f)),
-        ("Jade", new Vector4(0.34f, 0.86f, 0.68f, 1f)),
-        ("Ice", new Vector4(0.52f, 0.76f, 0.98f, 1f)),
-    ];
 
     public static void ApplyAccent(Vector4 accent)
     {
@@ -71,11 +67,15 @@ public static class Theme
     /// The panel colour nudged toward the accent, for surfaces that need to read as lit.
     public static Vector4 Tinted(float amount) => Vector4.Lerp(Panel, Accent, amount);
 
-    public static int Push()
+    /// What one Push put on the stacks, so Pop can take exactly that off again.
+    public readonly record struct ThemePush(int Colours, int Vars);
+
+    public static ThemePush Push()
     {
         var count = 0;
+        var vars = 0;
         Color(ImGuiCol.WindowBg, Background, ref count);
-        Color(ImGuiCol.ChildBg, Panel, ref count);
+        Color(ImGuiCol.ChildBg, new Vector4(0f, 0f, 0f, 0f), ref count);
         Color(ImGuiCol.PopupBg, Background, ref count);
         Color(ImGuiCol.Text, Text, ref count);
 
@@ -112,28 +112,26 @@ public static class Theme
 
         var scale = UiHelpers.Scale;
 
-        ImGui.PushStyleVar(
+        Var(
             ImGuiStyleVar.WindowPadding,
-            Vector2.Max(ImGui.GetStyle().WindowPadding, new Vector2(8f, 8f) * scale));
+            Vector2.Max(ImGui.GetStyle().WindowPadding, new Vector2(8f, 8f) * scale),
+            ref vars);
 
-        ImGui.PushStyleVar(ImGuiStyleVar.WindowRounding, 8f * scale);
-        ImGui.PushStyleVar(ImGuiStyleVar.FrameRounding, 6f * scale);
-        ImGui.PushStyleVar(ImGuiStyleVar.GrabRounding, 6f * scale);
-        ImGui.PushStyleVar(ImGuiStyleVar.ChildRounding, 6f * scale);
-        ImGui.PushStyleVar(ImGuiStyleVar.PopupRounding, 6f * scale);
-        ImGui.PushStyleVar(ImGuiStyleVar.PopupBorderSize, 1.5f * scale);
+        Var(ImGuiStyleVar.WindowRounding, 8f * scale, ref vars);
+        Var(ImGuiStyleVar.FrameRounding, Rad.Ctl, ref vars);
+        Var(ImGuiStyleVar.GrabRounding, Rad.Ctl, ref vars);
+        Var(ImGuiStyleVar.ChildRounding, Rad.Ctl, ref vars);
+        Var(ImGuiStyleVar.PopupRounding, Rad.Ctl, ref vars);
+        Var(ImGuiStyleVar.PopupBorderSize, 1.5f * scale, ref vars);
 
-        return count;
+        return new ThemePush(count, vars);
     }
 
-    public static void Pop(int colorCount)
+    public static void Pop(ThemePush pushed)
     {
-        ImGui.PopStyleVar(StyleVarCount);
-        ImGui.PopStyleColor(colorCount);
+        ImGui.PopStyleVar(pushed.Vars);
+        ImGui.PopStyleColor(pushed.Colours);
     }
-
-    /// Must match the number of PushStyleVar calls in Push.
-    private const int StyleVarCount = 7;
 
     private static void Color(ImGuiCol slot, Vector4 value, ref int count)
     {
@@ -141,134 +139,40 @@ public static class Theme
         count++;
     }
 
+    private static void Var(ImGuiStyleVar slot, float value, ref int count)
+    {
+        ImGui.PushStyleVar(slot, value);
+        count++;
+    }
+
+    private static void Var(ImGuiStyleVar slot, Vector2 value, ref int count)
+    {
+        ImGui.PushStyleVar(slot, value);
+        count++;
+    }
+
     /// Corner radius for cards.
-    public static float CardRounding => 12f * UiHelpers.Scale;
+    public static float CardRounding => Rad.Card;
 
-    /// Draws a layered drop shadow and rounded panel at the cursor, then opens a transparent child so normal
-    /// layout works on top of it.
-    public static void BeginCard(string id, Vector2 size, Vector4? accent = null, Vector4? gradientTint = null)
-    {
-        var pos = ImGui.GetCursorScreenPos();
-        var drawList = ImGui.GetWindowDrawList();
-        var scale = UiHelpers.Scale;
 
-        for (var i = 3; i >= 1; i--)
-        {
-            var offset = new Vector2(0, i * 2f * scale);
-            drawList.AddRectFilled(
-                pos + offset, pos + size + offset,
-                ImGui.GetColorU32(new Vector4(0, 0, 0, 0.05f * i)), CardRounding);
-        }
-
-        drawList.AddRectFilled(pos, pos + size, ImGui.GetColorU32(Panel), CardRounding);
-
-        if (gradientTint is { } tint)
-        {
-            var topColor = ImGui.GetColorU32(Vector4.Lerp(Panel, tint, 0.24f));
-            var panelU32 = ImGui.GetColorU32(Panel);
-            var fadeBottom = pos.Y + MathF.Min(size.Y * 0.55f, size.Y);
-
-            drawList.AddRectFilled(
-                pos, pos + new Vector2(size.X, CardRounding), topColor, CardRounding, ImDrawFlags.RoundCornersTop);
-            drawList.AddRectFilledMultiColor(
-                pos + new Vector2(0f, CardRounding), new Vector2(pos.X + size.X, fadeBottom),
-                topColor, topColor, panelU32, panelU32);
-        }
-
-        var borderColor = accent is { } a ? new Vector4(a.X, a.Y, a.Z, 0.55f) : Border;
-        drawList.AddRect(
-            pos, pos + size, ImGui.GetColorU32(borderColor), CardRounding, ImDrawFlags.None,
-            (accent is null ? 1.2f : 1.6f) * scale);
-
-        ImGui.PushStyleColor(ImGuiCol.ChildBg, new Vector4(0, 0, 0, 0));
-        ImGui.PushStyleColor(ImGuiCol.Border, new Vector4(0, 0, 0, 0));
-        ImGui.BeginChild(id, size, false, ImGuiWindowFlags.NoScrollbar);
-        ImGui.SetCursorPos(ImGui.GetCursorPos() + (new Vector2(14, 12) * scale));
-        ImGui.BeginGroup();
-    }
-
-    public static void EndCard()
-    {
-        ImGui.EndGroup();
-        ImGui.EndChild();
-        ImGui.PopStyleColor(2);
-    }
-
-    private readonly record struct PanelState(Vector2 Origin, float Width, Vector2 Padding, Vector4? Accent);
-
-    private static readonly Stack<PanelState> Panels = new();
-
-    /// A card that takes its height from what goes inside it, rather than being told.
-    public static void BeginPanel(float width, Vector4? accent = null, float padding = 14f)
-    {
-        var scale = UiHelpers.Scale;
-        var pad = new Vector2(padding * scale, (padding - 2f) * scale);
-        var origin = ImGui.GetCursorScreenPos();
-
-        var localX = ImGui.GetCursorPosX();
-
-        var drawList = ImGui.GetWindowDrawList();
-        drawList.ChannelsSplit(2);
-        drawList.ChannelsSetCurrent(1);
-
-        ImGui.SetCursorScreenPos(origin + pad);
-        ImGui.BeginGroup();
-
-        ImGui.PushTextWrapPos(localX + width - pad.X);
-
-        Panels.Push(new PanelState(origin, width, pad, accent));
-    }
-
-    public static void EndPanel()
-    {
-        var state = Panels.Pop();
-
-        ImGui.PopTextWrapPos();
-        ImGui.EndGroup();
-
-        var scale = UiHelpers.Scale;
-        var height = MathF.Max(ImGui.GetItemRectMax().Y - state.Origin.Y, 0f) + state.Padding.Y;
-        var size = new Vector2(state.Width, height);
-
-        var drawList = ImGui.GetWindowDrawList();
-        drawList.ChannelsSetCurrent(0);
-
-        for (var i = 3; i >= 1; i--)
-        {
-            var offset = new Vector2(0f, i * 2f * scale);
-            drawList.AddRectFilled(
-                state.Origin + offset, state.Origin + size + offset,
-                ImGui.GetColorU32(new Vector4(0f, 0f, 0f, 0.05f * i)), CardRounding);
-        }
-
-        var body = state.Accent is { } tint ? Vector4.Lerp(Panel, tint, 0.06f) : Panel;
-        drawList.AddRectFilled(state.Origin, state.Origin + size, ImGui.GetColorU32(body), CardRounding);
-
-        var lit = ImGui.GetColorU32(Vector4.Lerp(body, Vector4.One, state.Accent is null ? 0.035f : 0.05f));
-        var plain = ImGui.GetColorU32(body);
-        var fade = state.Origin.Y + MathF.Min(size.Y * 0.6f, 90f * scale);
-
-        drawList.AddRectFilled(
-            state.Origin, state.Origin + new Vector2(size.X, CardRounding), lit,
-            CardRounding, ImDrawFlags.RoundCornersTop);
-
-        drawList.AddRectFilledMultiColor(
-            state.Origin + new Vector2(0f, CardRounding),
-            new Vector2(state.Origin.X + size.X, fade),
-            lit, lit, plain, plain);
-
-        drawList.AddRect(
-            state.Origin, state.Origin + size,
-            ImGui.GetColorU32(state.Accent is { } a ? a with { W = 0.45f } : Border),
-            CardRounding, ImDrawFlags.None, 1.2f * scale);
-
-        drawList.ChannelsMerge();
-
-        ImGui.SetCursorScreenPos(state.Origin);
-        ImGui.Dummy(size);
-    }
 
     /// A section heading: small tracked capitals, an accent tick, and a rule running to the edge.
+    public static float HeaderRun(string label, float tracking = 1.6f)
+    {
+        var scale = UiHelpers.Scale;
+
+        return TickWidth(scale) + (HeaderGapDesign * scale)
+            + Foundation.Text.TrackedWidth(label.ToUpperInvariant(), tracking)
+            + (tracking * scale) + (RuleGapDesign * scale);
+    }
+
+    private static float TickWidth(float scale) => 3f * scale;
+
+    /// Between the tick and the label, and between the label and the rule.
+    private const float HeaderGapDesign = 8f;
+
+    private const float RuleGapDesign = 10f;
+
     public static void SectionHeader(string label, float tracking = 1.6f, float? ruleWidth = null)
     {
         var text = label.ToUpperInvariant();
@@ -277,8 +181,7 @@ public static class Theme
         var lineHeight = ImGui.GetTextLineHeight();
 
         var scale = UiHelpers.Scale;
-        var tickWidth = 3f * scale;
-        tracking *= scale;
+        var tickWidth = TickWidth(scale);
 
         var tickTop = origin.Y + (lineHeight * 0.18f);
         drawList.AddRectFilled(
@@ -286,18 +189,14 @@ public static class Theme
             new Vector2(origin.X + tickWidth, tickTop + (lineHeight * 0.64f)),
             ImGui.GetColorU32(Accent), 1.5f * scale);
 
-        var x = origin.X + tickWidth + (8f * scale);
-        var colour = ImGui.GetColorU32(TextDim);
+        var labelStart = origin.X + tickWidth + (HeaderGapDesign * scale);
+        var labelRoom = MathF.Max(0f, (origin.X + (ruleWidth ?? Layout.Inner)) - labelStart);
 
-        foreach (var character in text)
-        {
-            var glyph = character.ToString();
-            drawList.AddText(new Vector2(x, origin.Y), colour, glyph);
-            x += ImGui.CalcTextSize(glyph).X + tracking;
-        }
+        var run = Foundation.Text.Tracked(
+            drawList, new Vector2(labelStart, origin.Y), text, Col.U32(TextDim), tracking, labelRoom);
 
-        var ruleStart = x + (10f * scale);
-        var ruleEnd = origin.X + (ruleWidth ?? ImGui.GetContentRegionAvail().X);
+        var ruleStart = labelStart + run + (tracking * scale) + (RuleGapDesign * scale);
+        var ruleEnd = origin.X + (ruleWidth ?? Layout.Inner);
         if (ruleEnd > ruleStart + (12f * scale))
         {
             var y = origin.Y + (lineHeight / 2f);
@@ -312,30 +211,4 @@ public static class Theme
         ImGui.Dummy(new Vector2(0, lineHeight));
     }
 
-    /// A dim label above a bright value, the suite's standard readout pairing.
-    public static void Stat(string label, string value, Vector4? valueColor = null)
-    {
-        ImGui.TextColored(TextDim, label);
-        ImGui.TextColored(valueColor ?? Text, value);
-    }
-
-    /// Table chrome: banded rows, hairline separators, no vertical rules.
-    public static int PushTableStyle()
-    {
-        var count = 0;
-        Color(ImGuiCol.TableRowBg, new Vector4(0f, 0f, 0f, 0f), ref count);
-        Color(ImGuiCol.TableRowBgAlt, new Vector4(1f, 1f, 1f, 0.022f), ref count);
-        Color(ImGuiCol.TableHeaderBg, new Vector4(0f, 0f, 0f, 0.22f), ref count);
-        Color(ImGuiCol.TableBorderLight, new Vector4(Border.X, Border.Y, Border.Z, 0.28f), ref count);
-        Color(ImGuiCol.TableBorderStrong, new Vector4(Accent.X, Accent.Y, Accent.Z, 0.35f), ref count);
-
-        ImGui.PushStyleVar(ImGuiStyleVar.CellPadding, new Vector2(8f, 5f) * UiHelpers.Scale);
-        return count;
-    }
-
-    public static void PopTableStyle(int colorCount)
-    {
-        ImGui.PopStyleVar();
-        ImGui.PopStyleColor(colorCount);
-    }
 }

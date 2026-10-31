@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -29,8 +30,13 @@ public sealed class Friendships : IDisposable
     public Friendships(Plugin plugin)
     {
         this.plugin = plugin;
-        path = Path.Combine(Plugin.PluginInterface.GetPluginConfigDirectory(), "blocked.json");
+        var directory = Plugin.PluginInterface.GetPluginConfigDirectory();
+
+        path = Path.Combine(directory, "blocked.json");
+        seenPath = Path.Combine(directory, "seen.json");
+
         LoadBlocks();
+        LoadSeen();
     }
 
     /// Agreed friendships.
@@ -75,7 +81,8 @@ public sealed class Friendships : IDisposable
         var (name, world) = GalleryState.Character;
 
         Busy = true;
-        Message = enabled ? "Turning sharing on..." : "Turning sharing off...";
+
+        Message = string.Empty;
         Failed = false;
 
         _ = Task.Run(async () =>
@@ -134,6 +141,9 @@ public sealed class Friendships : IDisposable
     /// button look like it had done nothing.
     public void Sync()
     {
+        if (Faked)
+            return;
+
         if (syncing)
             return;
 
@@ -169,6 +179,12 @@ public sealed class Friendships : IDisposable
     /// Asks somebody to be friends.
     public void Ask(string characterKey)
     {
+        if (Faked)
+        {
+            Fail("The friend list is seeded with test data. Clear it in Diagnostics first.");
+            return;
+        }
+
         if (!SharingEnabled)
         {
             Fail("Turn on glamour sharing before adding friends.");
@@ -191,6 +207,7 @@ public sealed class Friendships : IDisposable
         }
 
         Busy = true;
+
         Message = "Asking...";
         Failed = false;
 
@@ -212,11 +229,15 @@ public sealed class Friendships : IDisposable
     /// Answers a request.
     public void Answer(string id, bool accept)
     {
+        if (Pretend(id, drop: true))
+            return;
+
         var (name, world) = GalleryState.Character;
         var asCharacter = CharacterHash.Key(name, world);
 
         Busy = true;
-        Message = accept ? "Accepting..." : "Declining...";
+
+        Message = string.Empty;
         Failed = false;
 
         _ = Task.Run(async () =>
@@ -235,6 +256,9 @@ public sealed class Friendships : IDisposable
     /// Ends a friendship, or withdraws a request.
     public void Remove(string id)
     {
+        if (Pretend(id, drop: true))
+            return;
+
         Busy = true;
         Failed = false;
 
@@ -274,17 +298,102 @@ public sealed class Friendships : IDisposable
 
     /// Whether this character is blocked.
     public bool IsBlocked(string characterKey) =>
-        characterKey.Length > 0 && blocked.Contains(characterKey);
+        characterKey.Length > 0
+        && (blocked.Contains(characterKey) || (fake?.Blocked.Contains(characterKey) ?? false));
 
     public void SetBlocked(string characterKey, bool value)
     {
         if (characterKey.Length == 0)
             return;
 
+        if (fake is { } fixture && fixture.Knows(characterKey))
+        {
+            if (value)
+                fixture.Blocked.Add(characterKey);
+            else
+                fixture.Blocked.Remove(characterKey);
+
+            return;
+        }
+
         var changed = value ? blocked.Add(characterKey) : blocked.Remove(characterKey);
 
         if (changed)
             SaveBlocks();
+    }
+
+
+    /// When each friend was last known to be sharing, as unix seconds.
+    private readonly ConcurrentDictionary<string, long> seen = new(StringComparer.OrdinalIgnoreCase);
+
+    private readonly string seenPath;
+
+    private long nextSeenSave;
+
+    /// How long after a change the sightings file is rewritten.
+    private const long SeenSaveIntervalMs = 60000;
+
+    /// Notes that somebody is about.
+    public void NoteSeen(string characterKey)
+    {
+        if (characterKey.Length == 0)
+            return;
+
+        seen[characterKey] = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+
+        if (Environment.TickCount64 < nextSeenSave)
+            return;
+
+        nextSeenSave = Environment.TickCount64 + SeenSaveIntervalMs;
+        SaveSeen();
+    }
+
+    /// When this character was last sharing, or null if that has never been observed.
+    public DateTime? LastSeen(string characterKey)
+    {
+        if (seen.TryGetValue(characterKey, out var when))
+            return DateTimeOffset.FromUnixTimeSeconds(when).UtcDateTime;
+
+        return fake is { } fixture && fixture.Seen.TryGetValue(characterKey, out var seeded)
+            ? seeded
+            : null;
+    }
+
+    private void LoadSeen()
+    {
+        try
+        {
+            if (!File.Exists(seenPath))
+                return;
+
+            var loaded = JsonConvert.DeserializeObject<Dictionary<string, long>>(
+                File.ReadAllText(seenPath));
+
+            if (loaded is null)
+                return;
+
+            foreach (var (key, when) in loaded)
+                seen[key] = when;
+        }
+        catch (Exception ex)
+        {
+            Plugin.Log.Warning(ex, $"[EchoGlam] Could not read {seenPath}. Last-seen times start empty.");
+        }
+    }
+
+    private void SaveSeen()
+    {
+        try
+        {
+            File.WriteAllText(
+                seenPath,
+                JsonConvert.SerializeObject(
+                    seen.ToDictionary(pair => pair.Key, pair => pair.Value), Formatting.Indented));
+        }
+        catch (Exception ex)
+        {
+            Plugin.Log.Warning(ex, $"[EchoGlam] Could not write {seenPath}");
+        }
     }
 
     private void LoadBlocks()
@@ -346,9 +455,86 @@ public sealed class Friendships : IDisposable
         return true;
     }
 
+
+    /// A seeded friend list, held entirely in memory.
+    internal sealed class Fixture
+    {
+        public FriendList List { get; init; } = new();
+
+        public Dictionary<string, DateTime> Seen { get; init; } =
+            new(StringComparer.OrdinalIgnoreCase);
+
+        public HashSet<string> Blocked { get; init; } = new(StringComparer.OrdinalIgnoreCase);
+
+        /// Whether this character is one of the seeded ones, so a mutator can tell a fixture row from a real
+        /// friend who happens to be on screen beside it.
+        public bool Knows(string characterKey) =>
+            List.Friends.Any(f => Same(f.Character, characterKey))
+            || List.Incoming.Any(f => Same(f.Character, characterKey))
+            || List.Outgoing.Any(f => Same(f.Character, characterKey));
+    }
+
+    private Fixture? fake;
+
+    internal bool Faked => fake is not null;
+
+    /// Puts a seeded list up in place of the real one.
+    internal void ApplyFixture(Fixture fixture)
+    {
+        fake = fixture;
+
+        Friends = fixture.List.Friends;
+        Incoming = fixture.List.Incoming;
+        Outgoing = fixture.List.Outgoing;
+
+        Synced = true;
+        Message = string.Empty;
+        Failed = false;
+        Busy = false;
+    }
+
+    /// Takes it down and asks the relay for the truth again.
+    internal void ClearFixture()
+    {
+        if (fake is null)
+            return;
+
+        fake = null;
+
+        Friends = [];
+        Incoming = [];
+        Outgoing = [];
+        Synced = false;
+
+        Sync();
+    }
+
+    /// Whether a relay call should be skipped because the row it came from is invented.
+    private bool Pretend(string id, bool drop)
+    {
+        if (fake is not { } fixture)
+            return false;
+
+        if (drop && id.Length > 0)
+        {
+            fixture.List.Friends.RemoveAll(f => f.Id == id);
+            fixture.List.Incoming.RemoveAll(f => f.Id == id);
+            fixture.List.Outgoing.RemoveAll(f => f.Id == id);
+        }
+
+        Busy = false;
+        Failed = false;
+        Message = string.Empty;
+
+        return true;
+    }
+
     public void Dispose()
     {
         stopping.Cancel();
         stopping.Dispose();
+
+        if (!seen.IsEmpty)
+            SaveSeen();
     }
 }

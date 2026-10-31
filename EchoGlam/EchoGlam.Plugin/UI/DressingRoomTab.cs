@@ -7,6 +7,7 @@ using Dalamud.Interface;
 using Dalamud.Interface.Textures;
 using EchoGlam.Game;
 using EchoGlam.UI.Controls;
+using EchoGlam.UI.Foundation;
 
 namespace EchoGlam.UI;
 
@@ -32,6 +33,32 @@ public sealed class DressingRoomTab
 
     /// This frame's item list, and how many the source filters took out of it.
     private List<GlamItem> matches = [];
+
+    /// Everything the filter pass depends on, as one comparable value.
+    private readonly record struct FilterKey(
+        GlamSlot Slot, string Search, uint Job, bool Owned,
+        bool HideStore, bool HideSeasonal, bool HideExclusive,
+        int OwnedVersion, bool CatalogueReady);
+
+    private FilterKey lastFilter;
+    private bool filterValid;
+
+    private FilterKey CurrentFilter => new(
+        selectedSlot, search, selectedJob ?? 0u, ownedOnly,
+        hideStore, hideSeasonal, hideExclusive,
+        plugin.Owned.Version, Items.Ready);
+
+    private void RefreshMatches()
+    {
+        var key = CurrentFilter;
+
+        if (filterValid && key == lastFilter)
+            return;
+
+        lastFilter = key;
+        filterValid = true;
+        matches = Matches(out hiddenBySource);
+    }
 
     private int hiddenBySource;
 
@@ -60,78 +87,71 @@ public sealed class DressingRoomTab
 
     private readonly AppearanceEditor appearance;
 
-    /// Name typed into the save box.
-    private string outfitName = string.Empty;
-
-    /// Whether a saved outfit carries the appearance as well as the gear.
-    private bool saveAppearance;
-
-    /// A Glamourer design that has been pasted and read, waiting to be named and kept.
-    private GlamourerLook? pendingImport;
-
-    /// The name the imported outfit will be saved under.
-    private string importName = string.Empty;
-
-    /// Why the last paste did not work, for the person who pasted it.
-    private string importError = string.Empty;
-
-    /// Confirmation that a design went to the clipboard.
-    private string exportNotice = string.Empty;
-
-    /// Filter over the saved outfit list.
-    private string outfitSearch = string.Empty;
-
-    /// Newest first rather than alphabetical.
-    private bool outfitsByDate;
-
-    /// Which outfit's delete button has been armed, if any.
-    private string? pendingDelete;
-
-    /// Which outfit's conditions are open, or null for the saved list.
-    private string? rulesFor;
-
-    /// Whether the priority list is open.
-    private bool priorityOpen;
-
-    /// State of the map picker, while adding or changing a place rule.
-    private OutfitRule? pickingPlaceFor;
-    private string zoneSearch = string.Empty;
-
-    /// Null for everything, true for duties only, false for open world only.
-    private bool? zoneDutyFilter;
-
-    /// Filter over the fallback-outfit popup.
-    private string originalSearch = string.Empty;
-
-    /// Which outfit's animation is being chosen, or null.
-    private string? pickingAnimationFor;
-    private string animationSearch = string.Empty;
-
-    /// Null for both, or one source of animations.
-    private AnimationSource? animationFilter;
+    /// The outfits pane, which is its own screen and keeps its own state.
+    private readonly OutfitsPane outfits;
 
     public DressingRoomTab(Plugin plugin)
     {
         this.plugin = plugin;
         appearance = new AppearanceEditor(plugin);
+        outfits = new OutfitsPane(plugin, appearance);
     }
 
     private ItemCatalogue Items => plugin.Items;
     private DyeCatalogue Dyes => plugin.Dyes;
     private Wardrobe Wardrobe => plugin.Wardrobe;
 
-    /// Width of the slot column, in design units.
-    private const float SlotColumnDesign = 210f;
+    /// Width of the figure column, in design units.
+    internal const float FigureDesign = 380f;
+
+    /// Width of the figure once it is collapsed: one column of icons, wide enough to hit.
+    internal const float RailDesign = 56f;
+
+    /// How much narrower the window gets when the figure folds away.
+    internal const float CollapseSaving = FigureDesign - RailDesign;
+
+    /// Height of a slot tile, in design units.
+    private const float SlotTileDesign = 52f;
+
+    /// The icon in the block at the top of the bench, and how tall that block comes out.
+    internal const float BannerIconDesign = 64f;
+
+    internal static float BannerHeight => (BannerIconDesign * UiHelpers.Scale) + (Sp.Xl * 2f);
 
     /// An item cell: the icon box, and the row height including the name under it.
     private const float CellIconDesign = 46f;
     private const float CellDesign = 54f;
     private const float CellGapDesign = 6f;
 
+    /// The figure's left-hand column: what a look is built around, top to bottom.
+    private static readonly GlamSlot[] ArmourColumn =
+    [
+        GlamSlot.MainHand, GlamSlot.OffHand, GlamSlot.Head,
+        GlamSlot.Body, GlamSlot.Hands, GlamSlot.Legs, GlamSlot.Feet,
+    ];
+
+    /// The figure's right-hand column.
+    private static readonly GlamSlot[] AccessoryColumn =
+    [
+        GlamSlot.Ears, GlamSlot.Neck, GlamSlot.Wrists, GlamSlot.RingR, GlamSlot.RingL,
+    ];
+
+    /// Whether the figure is folded away to its rail.
+    private bool Compact
+    {
+        get => plugin.Configuration.DressingRoomCompact;
+        set
+        {
+            if (plugin.Configuration.DressingRoomCompact == value)
+                return;
+
+            plugin.Configuration.DressingRoomCompact = value;
+            plugin.Configuration.Save();
+        }
+    }
+
     public void Draw()
     {
-        var scale = UiHelpers.Scale;
-
         plugin.EnsureCatalogues();
 
         if (!Items.Ready || !Dyes.Ready)
@@ -140,24 +160,42 @@ public sealed class DressingRoomTab
             return;
         }
 
-        DrawToolbar();
-        ImGui.Dummy(new Vector2(0f, 6f * scale));
-
         var available = ImGui.GetContentRegionAvail();
-        var slotWidth = SlotColumnDesign * scale;
+        var scale = UiHelpers.Scale;
 
-        if (ImGui.BeginChild("##slots", new Vector2(slotWidth, available.Y), false))
-            DrawSlotList();
+        var figureWidth = Compact
+            ? RailDesign * scale
+            : MathF.Min(FigureDesign * scale, available.X * 0.45f);
+
+        var gap = Compact ? Sp.Lg : Sp.Xxl;
+        var benchWidth = MathF.Max(260f * scale, available.X - figureWidth - gap);
+
+        var origin = ImGui.GetCursorScreenPos();
+
+        var rule = origin.X + figureWidth + (gap / 2f);
+
+        ImGui.GetWindowDrawList().AddRectFilled(
+            new Vector2(rule, origin.Y),
+            new Vector2(rule + Stroke.Hair, origin.Y + available.Y),
+            Col.U32(Col.EdgeRest with { W = 0.5f }));
+
+        if (ImGui.BeginChild("##figure", new Vector2(figureWidth, available.Y), false))
+        {
+            if (Compact)
+                DrawRail();
+            else
+                DrawFigure();
+        }
 
         ImGui.EndChild();
-        ImGui.SameLine(0f, 10f * scale);
+        ImGui.SameLine(0f, gap);
 
-        if (ImGui.BeginChild("##picker", new Vector2(0f, available.Y), false))
+        if (ImGui.BeginChild("##bench", new Vector2(benchWidth, available.Y), false))
         {
             switch (pane)
             {
                 case RightPane.Outfits:
-                    DrawOutfits();
+                    outfits.Draw();
                     break;
 
                 case RightPane.Appearance:
@@ -173,1564 +211,494 @@ public sealed class DressingRoomTab
         ImGui.EndChild();
     }
 
-    /// The outfits pane: save what you are wearing, and search what you have saved.
-    private void DrawOutfits()
+    /// The character sheet: twelve slots as tiles, in the arrangement the game uses, plus the two
+    /// destinations that are the same kind of choice.
+    private void DrawFigure()
     {
-        if (pickingPlaceFor is not null)
-        {
-            DrawZonePicker();
-            return;
-        }
-
-        if (pickingAnimationFor is { } animating)
-        {
-            DrawAnimationPicker(animating);
-            return;
-        }
-
-        if (rulesFor is { } editing)
-        {
-            DrawOutfitConditions(editing);
-            return;
-        }
-
-        if (priorityOpen)
-        {
-            DrawPriority();
-            return;
-        }
-
-        DrawOutfitList();
-    }
-
-    private void DrawOutfitList()
-    {
-        var scale = UiHelpers.Scale;
-        var store = plugin.Outfits;
-        var width = ImGui.GetContentRegionAvail().X;
-        var gap = 8f * scale;
-
-        DrawSavePanel(width);
-        ImGui.Dummy(new Vector2(0f, 10f * scale));
-
-        DrawImportPanel(width);
-        ImGui.Dummy(new Vector2(0f, 10f * scale));
-
-        DrawAutomationPanel(width);
-        ImGui.Dummy(new Vector2(0f, 12f * scale));
-
-        Theme.SectionHeader($"Saved ({store.Count})");
-        ImGui.Dummy(new Vector2(0f, 6f * scale));
-
-        if (store.Count == 0)
-        {
-            DrawEmptyState();
-            return;
-        }
-
-        var sortLabels = new[] { "A-Z", "Newest" };
-        var sortWidth = EchoSegment.Width(sortLabels);
-        var rowHeight = 28f * scale;
-
-        UiHelpers.SearchField(
-            "##outfitsearch", "Search outfits...", ref outfitSearch,
-            MathF.Max(120f * scale, width - sortWidth - gap), rowHeight, plugin.Fonts.Icon);
-
-        ImGui.SameLine(0f, gap);
-
-        var sort = EchoSegment.Draw(
-            "##outfitsort", sortLabels, outfitsByDate ? 1 : 0, rowHeight,
-            ["Sorted by name.", "Sorted by when they were saved."]);
-
-        outfitsByDate = sort == 1;
-
-        ImGui.Dummy(new Vector2(0f, 8f * scale));
-
-        var visible = store.All.AsEnumerable();
-
-        if (!string.IsNullOrWhiteSpace(outfitSearch))
-            visible = visible.Where(o => o.Name.Contains(outfitSearch, StringComparison.OrdinalIgnoreCase));
-
-        var list = outfitsByDate
-            ? visible.OrderByDescending(o => o.SavedAtUtc).ToList()
-            : visible.ToList();
-
-        if (list.Count == 0)
-        {
-            ImGui.TextColored(Theme.TextDim, "No outfit matches that.");
-            return;
-        }
-
-        if (ImGui.BeginChild(
-                "##outfitlist", ImGui.GetContentRegionAvail(), false,
-                ImGuiWindowFlags.AlwaysVerticalScrollbar))
-        {
-            foreach (var outfit in list)
-                DrawOutfitRow(outfit);
-        }
-
-        ImGui.EndChild();
-    }
-
-    /// Saving the current look.
-    private void DrawSavePanel(float outerWidth)
-    {
-        var scale = UiHelpers.Scale;
-        var store = plugin.Outfits;
-
-        Theme.BeginPanel(outerWidth);
-
-        var width = outerWidth - (28f * scale);
-
-        Theme.SectionHeader("Save what you are wearing", ruleWidth: width);
-        ImGui.Dummy(new Vector2(0f, 6f * scale));
-
-        if (store.ReadOnly)
-        {
-            ImGui.TextColored(Theme.Bad, "outfits.json could not be read, so nothing will be saved.");
-            ImGui.TextColored(Theme.TextDim, "Move or delete the file and reload the plugin.");
-            ImGui.Dummy(new Vector2(0f, 6f * scale));
-        }
-
-        var trimmed = outfitName.Trim();
-        var replacing = trimmed.Length > 0 && store.Exists(trimmed);
-        var ready = trimmed.Length > 0 && Wardrobe.Active && !store.ReadOnly;
-        var label = replacing ? "Replace" : "Save";
-        var saveIcon = replacing ? FontAwesomeIcon.Sync : FontAwesomeIcon.Save;
-
-        var saveWidth = EchoButton.ContentSize(label, plugin.Fonts.Icon, saveIcon).X;
-        var gap = 8f * scale;
-        var height = 28f * scale;
-
-        ImGui.PushStyleVar(ImGuiStyleVar.FrameRounding, height / 2f);
-        ImGui.PushStyleVar(ImGuiStyleVar.FramePadding, new Vector2(12f * scale, 6f * scale));
-        ImGui.PushStyleColor(ImGuiCol.FrameBg, Theme.Tinted(0.04f));
-
-        ImGui.SetNextItemWidth(MathF.Max(120f * scale, width - saveWidth - gap));
-        ImGui.InputTextWithHint("##outfitname", "Name this outfit...", ref outfitName, 60);
-
-        ImGui.PopStyleColor();
-        ImGui.PopStyleVar(2);
-
-        ImGui.SameLine(0f, gap);
-
-        if (EchoButton.Draw(
-                "##outfitsave", label, new Vector2(saveWidth, height),
-                iconFont: plugin.Fonts.Icon,
-                icon: saveIcon,
-                enabled: ready,
-                tooltip: !Wardrobe.Active
-                    ? "There is nothing on to save yet."
-                    : replacing
-                        ? "An outfit with this name already exists and will be overwritten."
-                        : null,
-                primary: ready))
-        {
-            store.Save(trimmed, Wardrobe.Current, saveAppearance ? appearance.Draft : null);
-            outfitName = string.Empty;
-        }
-
-        ImGui.Dummy(new Vector2(0f, 8f * scale));
-
-        EchoToggle.Draw("##saveappearance", "Include Appearance", ref saveAppearance,
-            "Saves your face, hair and colours with the gear. Off means the outfit only changes what " +
-            "you are wearing and leaves your character's own look alone.");
-
-        Theme.EndPanel();
-    }
-
-    /// Bringing a design over from Glamourer.
-    private void DrawImportPanel(float outerWidth)
-    {
-        var scale = UiHelpers.Scale;
-        var store = plugin.Outfits;
-
-        Theme.BeginPanel(outerWidth);
-
-        var width = outerWidth - (28f * scale);
-        var height = 28f * scale;
-        var gap = 8f * scale;
-
-        Theme.SectionHeader("Glamourer", ruleWidth: width);
-        ImGui.Dummy(new Vector2(0f, 6f * scale));
-
-        if (pendingImport is null)
-        {
-            ImGui.TextColored(Theme.TextDim, "Move looks between EchoGlam and Glamourer.");
-            ImGui.Dummy(new Vector2(0f, 8f * scale));
-
-            var pasteWidth = EchoButton.ContentSize("Paste Design", plugin.Fonts.Icon, FontAwesomeIcon.Paste).X;
-            var copyWidth = EchoButton.ContentSize("Copy Design", plugin.Fonts.Icon, FontAwesomeIcon.Copy).X;
-
-            if (EchoButton.Draw(
-                    "##glampaste", "Paste Design", new Vector2(pasteWidth, height),
-                    iconFont: plugin.Fonts.Icon,
-                    icon: FontAwesomeIcon.Paste,
-                    enabled: plugin.Items.Ready && !store.ReadOnly,
-                    tooltip: !plugin.Items.Ready
-                        ? "The item list is still loading."
-                        : "Reads the design on your clipboard."))
-            {
-                PasteGlamourerDesign();
-            }
-
-            ImGui.SameLine(0f, gap);
-
-            if (EchoButton.Draw(
-                    "##glamcopy", "Copy Design", new Vector2(copyWidth, height),
-                    iconFont: plugin.Fonts.Icon,
-                    icon: FontAwesomeIcon.Copy,
-                    enabled: Wardrobe.Active,
-                    tooltip: Wardrobe.Active
-                        ? "Copies what you are wearing, for Glamourer."
-                        : "There is nothing on to copy yet."))
-            {
-                CopyAsGlamourerDesign();
-            }
-
-            if (importError.Length > 0)
-            {
-                ImGui.Dummy(new Vector2(0f, 6f * scale));
-                ImGui.TextColored(Theme.Bad, importError);
-            }
-            else if (exportNotice.Length > 0)
-            {
-                ImGui.Dummy(new Vector2(0f, 6f * scale));
-                ImGui.TextColored(Theme.TextDim, exportNotice);
-            }
-
-            Theme.EndPanel();
-            return;
-        }
-
-        var pieces = pendingImport.Pieces;
-        var emptied = pendingImport.Look.Count - pieces;
-
-        ImGui.TextColored(
-            pieces == 0 ? Theme.Bad : Theme.TextDim,
-            pieces == 0
-                ? "No gear in this design could be matched."
-                : pendingImport.Appearance is not null
-                    ? $"{pieces} pieces, with appearance."
-                    : $"{pieces} pieces.");
-
-        if (emptied > 0)
-            ImGui.TextColored(Theme.TextDim, $"{emptied} empty slots. Wearing it takes those off.");
-
-        foreach (var note in pendingImport.Notes)
-            ImGui.TextColored(Theme.TextDim, note);
-
-        ImGui.Dummy(new Vector2(0f, 8f * scale));
-
-        var trimmed = importName.Trim();
-        var replacing = trimmed.Length > 0 && store.Exists(trimmed);
-        var label = replacing ? "Replace" : "Add Outfit";
-        var addIcon = replacing ? FontAwesomeIcon.Sync : FontAwesomeIcon.Plus;
-
-        var addWidth = EchoButton.ContentSize(label, plugin.Fonts.Icon, addIcon).X;
-        var discardWidth = EchoButton.ContentSize("Discard", plugin.Fonts.Icon, FontAwesomeIcon.Times).X;
-        var ready = trimmed.Length > 0 && pieces > 0 && !store.ReadOnly;
-
-        ImGui.PushStyleVar(ImGuiStyleVar.FrameRounding, height / 2f);
-        ImGui.PushStyleVar(ImGuiStyleVar.FramePadding, new Vector2(12f * scale, 6f * scale));
-        ImGui.PushStyleColor(ImGuiCol.FrameBg, Theme.Tinted(0.04f));
-
-        ImGui.SetNextItemWidth(MathF.Max(
-            60f * scale, width - addWidth - discardWidth - (gap * 2f)));
-        ImGui.InputTextWithHint("##glamimportname", "Name this outfit...", ref importName, 60);
-
-        ImGui.PopStyleColor();
-        ImGui.PopStyleVar(2);
-
-        ImGui.SameLine(0f, gap);
-
-        if (EchoButton.Draw(
-                "##glamimportsave", label, new Vector2(addWidth, height),
-                iconFont: plugin.Fonts.Icon,
-                icon: addIcon,
-                enabled: ready,
-                tooltip: replacing
-                    ? "An outfit with this name already exists and will be overwritten."
-                    : null,
-                primary: ready))
-        {
-            store.Save(trimmed, pendingImport.Look, pendingImport.Appearance);
-            pendingImport = null;
-            importName = string.Empty;
-        }
-
-        ImGui.SameLine(0f, gap);
-
-        if (EchoButton.Draw(
-                "##glamimportdiscard", "Discard", new Vector2(discardWidth, height),
-                iconFont: plugin.Fonts.Icon,
-                icon: FontAwesomeIcon.Times,
-                enabled: true))
-        {
-            pendingImport = null;
-            importName = string.Empty;
-        }
-
-        Theme.EndPanel();
-    }
-
-    /// Reads whatever is on the clipboard as a Glamourer design.
-    private void PasteGlamourerDesign()
-    {
-        importError = string.Empty;
-        exportNotice = string.Empty;
-
-        string clipboard;
-
-        try
-        {
-            clipboard = ImGui.GetClipboardText();
-        }
-        catch (Exception)
-        {
-            importError = "The clipboard could not be read. Try again.";
-            return;
-        }
-
-        var look = GlamourerDesign.Read(
-            clipboard,
-            plugin.Items,
-            appearance.Draft ?? Wardrobe.CurrentAppearance ?? Wardrobe.BaseAppearance,
-            out var error);
-
-        if (look is null)
-        {
-            importError = error;
-            return;
-        }
-
-        pendingImport = look;
-        importName = look.Name;
-    }
-
-    /// Puts what the character is wearing on the clipboard as a Glamourer design.
-    private void CopyAsGlamourerDesign()
-    {
-        importError = string.Empty;
-        exportNotice = string.Empty;
-
-        var set = appearance.Draft ?? Wardrobe.CurrentAppearance;
-
-        try
-        {
-            ImGui.SetClipboardText(GlamourerDesign.Write("EchoGlam Look", Wardrobe.Current, set));
-        }
-        catch (Exception ex)
-        {
-            Plugin.Log.Error(ex, "[EchoGlam] Could not write a Glamourer design to the clipboard");
-            importError = "The clipboard could not be written to. Try again.";
-            return;
-        }
-
-        exportNotice = set is not null
-            ? "Copied, with appearance. Paste it into Glamourer."
-            : "Copied. Paste it into Glamourer.";
-    }
-
-    /// The automation panel: the switch, what is happening right now, and the two things that are not rules -
-    /// the fallback and the priority order.
-    private void DrawAutomationPanel(float outerWidth)
-    {
-        var scale = UiHelpers.Scale;
-        var rules = plugin.Rules;
-        var driving = rules.Enabled && plugin.Automation.Claimed is not null && !plugin.Automation.Surrendered;
-
-        Theme.BeginPanel(outerWidth, driving ? Theme.Accent : null);
-
-        var width = outerWidth - (28f * scale);
-
-        Theme.SectionHeader("Automatic outfits", ruleWidth: width);
-        ImGui.Dummy(new Vector2(0f, 6f * scale));
-
-        if (rules.ReadOnly)
-        {
-            ImGui.TextColored(Theme.Bad, "outfit-rules.json could not be read, so rules will not be saved.");
-            ImGui.Dummy(new Vector2(0f, 6f * scale));
-        }
-
-        var enabled = rules.Enabled;
-
-        if (EchoToggle.Draw("##automation", "Dress Me Automatically", ref enabled,
-                "Wears an outfit when its conditions are met. Right-click an outfit below to set them."))
-        {
-            rules.Enabled = enabled;
-        }
-
-        if (!enabled)
-        {
-            ImGui.Dummy(new Vector2(0f, 6f * scale));
-            ImGui.PushTextWrapPos(ImGui.GetCursorPosX() + width);
-            ImGui.TextColored(Theme.TextDisabled,
-                "Off. Outfits only go on when you put them on.");
-            ImGui.PopTextWrapPos();
-
-            Theme.EndPanel();
-            return;
-        }
-
-        ImGui.Dummy(new Vector2(0f, 10f * scale));
-        DrawAutomationStatus(width, driving);
-        ImGui.Dummy(new Vector2(0f, 12f * scale));
-
-        var original = rules.Original;
-        var height = 26f * scale;
-
-        ImGui.TextColored(Theme.TextDim, "Otherwise wear");
-        ImGui.Dummy(new Vector2(0f, 5f * scale));
-
-        if (EchoButton.Draw(
-                "##originaloutfit", original ?? "What I Have On", new Vector2(0f, height),
-                iconFont: plugin.Fonts.Icon, icon: FontAwesomeIcon.Undo,
-                selected: original is not null,
-                tooltip: original is not null
-                    ? $"Goes back to \"{original}\" when no rule matches. Right-click to clear it."
-                    : "Goes back to the look you had on before a rule dressed you. Click to pick an outfit instead."))
-        {
-            originalSearch = string.Empty;
-            ImGui.OpenPopup(OriginalPopupId);
-        }
-
-        if (EchoButton.RightClicked())
-            rules.Original = null;
-
-        DrawOriginalPopup();
-
-        if (plugin.Rules.Rules.Count > 1)
-        {
-            ImGui.SameLine(0f, 8f * scale);
-
-            if (EchoButton.Draw(
-                    "##priority", "Priority", new Vector2(0f, height),
-                    iconFont: plugin.Fonts.Icon, icon: FontAwesomeIcon.SortAmountDown,
-                    tooltip: "Which rule wins when more than one of them matches at once."))
-            {
-                priorityOpen = true;
-            }
-        }
-
-        Theme.EndPanel();
-    }
-
-    /// What the rules are doing right now: a lamp, a headline, and where you are.
-    private void DrawAutomationStatus(float width, bool driving)
-    {
-        var scale = UiHelpers.Scale;
         var drawList = ImGui.GetWindowDrawList();
-
-        var here = plugin.Zones.NameFor(Plugin.ClientState.TerritoryType);
-
-        if (plugin.Housing.Current is { } house)
-            here = $"{here}, {house.Address}";
-
-        var worn = plugin.Automation.Claimed;
-        var surrendered = plugin.Automation.Surrendered;
-
-        string headline;
-        string detail;
-        Vector4 lamp;
-
-        if (worn is not null && !surrendered)
-        {
-            headline = worn;
-            detail = $"Worn by a rule · {here}";
-            lamp = Theme.Accent;
-        }
-        else if (worn is not null)
-        {
-            headline = worn;
-            detail = $"You changed it by hand, so the rule let go · {here}";
-            lamp = Theme.Warning;
-        }
-        else if (plugin.Rules.Rules.Count == 0)
-        {
-            headline = "No conditions set";
-            detail = "Right-click an outfit below to say when it should go on";
-            lamp = Theme.TextDisabled;
-        }
-        else
-        {
-            headline = "Nothing matches here";
-            detail = here;
-            lamp = Theme.TextDisabled;
-        }
-
-        var origin = ImGui.GetCursorScreenPos();
-        var lampRadius = 4f * scale;
-        var textLeft = origin.X + (18f * scale);
-        var lineGap = 4f * scale;
-        var detailSize = ImGui.GetFontSize() * 0.88f;
-        var height = ImGui.GetTextLineHeight() + lineGap + detailSize;
-
-        ImGui.Dummy(new Vector2(width, height));
-
-        var centre = new Vector2(origin.X + (5f * scale), origin.Y + (ImGui.GetTextLineHeight() / 2f));
-
-        if (driving)
-            drawList.AddCircleFilled(centre, lampRadius * 2.2f, ImGui.GetColorU32(lamp with { W = 0.18f }), 20);
-
-        drawList.AddCircleFilled(centre, lampRadius, ImGui.GetColorU32(lamp), 20);
-
-        using (plugin.Fonts.Header.PushSafe())
-        {
-            drawList.AddText(
-                new Vector2(textLeft, origin.Y - (2f * scale)),
-                ImGui.GetColorU32(worn is not null ? Theme.Text : Theme.TextDim),
-                UiHelpers.Truncate(headline, width - (textLeft - origin.X)));
-        }
-
-        drawList.AddText(
-            ImGui.GetFont(), detailSize,
-            new Vector2(textLeft, origin.Y + ImGui.GetTextLineHeight() + lineGap),
-            ImGui.GetColorU32(Theme.TextDim),
-            UiHelpers.Truncate(detail, width - (textLeft - origin.X)));
-    }
-
-    /// The saved list with nothing in it.
-    private void DrawEmptyState()
-    {
-        var scale = UiHelpers.Scale;
-        var drawList = ImGui.GetWindowDrawList();
-        var width = ImGui.GetContentRegionAvail().X;
-        var height = 92f * scale;
+        var avail = ImGui.GetContentRegionAvail();
         var origin = ImGui.GetCursorScreenPos();
 
-        ImGui.Dummy(new Vector2(width, height));
+        var column = (avail.X - Sp.Lg) / 2f;
+        var right = origin.X + column + Sp.Lg;
+        var gap = Sp.Sm;
+        var tile = SlotTileDesign * UiHelpers.Scale;
 
-        var min = origin;
-        var max = origin + new Vector2(width, height);
+        var headRow = Metrics.TouchMin;
+        var captionH = headRow + Sp.Md;
+        var captionY = origin.Y + ((headRow - (Text.CaptionSize * 1.15f)) / 2f);
 
-        drawList.AddRectFilled(min, max, ImGui.GetColorU32(Theme.Tinted(0.04f)), Theme.CardRounding);
+        using (Text.PushCaption())
+        {
+            Text.Tracked(
+                drawList, new Vector2(origin.X, captionY), "ARMOUR",
+                Col.U32(Col.TextMuted), 1.8f, column);
+
+            Text.Tracked(
+                drawList, new Vector2(right, captionY), "ACCESSORIES",
+                Col.U32(Col.TextMuted), 1.8f, column - headRow - Sp.Sm);
+        }
+
+        DrawFoldButton(new Vector2(origin.X + avail.X - headRow, origin.Y));
+
+        var top = origin.Y + captionH;
+
+        for (var i = 0; i < ArmourColumn.Length; i++)
+        {
+            ImGui.SetCursorScreenPos(new Vector2(origin.X, top + (i * (tile + gap))));
+            DrawSlotTile(ArmourColumn[i], column, tile);
+        }
+
+        for (var i = 0; i < AccessoryColumn.Length; i++)
+        {
+            ImGui.SetCursorScreenPos(new Vector2(right, top + (i * (tile + gap))));
+            DrawSlotTile(AccessoryColumn[i], column, tile);
+        }
+
+        var ruleY = top + (AccessoryColumn.Length * (tile + gap)) + Sp.Xl - gap;
+
+        drawList.AddRectFilled(
+            new Vector2(right, ruleY),
+            new Vector2(right + column, ruleY + Stroke.Hair),
+            Col.U32(Col.EdgeRest with { W = 0.55f }));
+
+        var wardrobeTop = ruleY + Stroke.Hair + Sp.Xl;
+
+        ImGui.SetCursorScreenPos(new Vector2(right, wardrobeTop));
+
+        DrawPaneTile(
+            RightPane.Outfits, FontAwesomeIcon.Bookmark, "Outfits",
+            plugin.Outfits.Count == 0 ? "None saved" : $"{plugin.Outfits.Count} saved",
+            highlight: false, width: column, height: tile);
+
+        ImGui.SetCursorScreenPos(new Vector2(right, wardrobeTop + tile + gap));
+
+        DrawPaneTile(
+            RightPane.Appearance, FontAwesomeIcon.User, "Appearance",
+            Wardrobe.HasAppearanceOverride ? "Changed" : "Untouched",
+            highlight: Wardrobe.HasAppearanceOverride, width: column, height: tile);
+
+        var footTop = MathF.Max(
+            top + (ArmourColumn.Length * (tile + gap)),
+            wardrobeTop + (tile * 2f) + gap) + Sp.Xl;
+
+        drawList.AddRectFilled(
+            new Vector2(origin.X, footTop),
+            new Vector2(origin.X + avail.X, footTop + Stroke.Hair),
+            Col.U32(Col.EdgeRest with { W = 0.55f }));
+
+        ImGui.SetCursorScreenPos(new Vector2(origin.X, footTop + Stroke.Hair + Sp.Xl));
+        DrawGlobalActions((avail.X - Sp.Md) / 2f, Metrics.RowTall);
+    }
+
+    /// Revert All and Load Current, side by side at the foot of the figure.
+    private void DrawGlobalActions(float width, float height)
+    {
+        var icons = plugin.Fonts.Icon;
+
+        if (EchoButton.Draw(
+                "##revertall", "Revert All", new Vector2(width, height),
+                iconFont: icons, icon: FontAwesomeIcon.UndoAlt,
+                enabled: Wardrobe.Active,
+                tooltip: "Puts your real gear and appearance back."))
+        {
+            Wardrobe.RevertAll();
+            appearance.Invalidate();
+        }
+
+        ImGui.SameLine(0f, Sp.Md);
+
+        if (EchoButton.Draw(
+                "##copyworn", "Load Current", new Vector2(width, height),
+                iconFont: icons, icon: FontAwesomeIcon.ArrowDown,
+                tooltip: "Fills the slots with what you are wearing right now, glamour plates and " +
+                         "dyes included, so you can edit from there."))
+        {
+            var current = Wardrobe.CaptureWorn();
+
+            if (current.Count > 0)
+                Wardrobe.Wear(current);
+        }
+    }
+
+    /// The material every tile in the figure is made of: fill, the thread of light on its top edge, and a
+    /// ring that only emits for the one you are working in.
+    private static void PaintTileBody(
+        ImDrawListPtr drawList, Vector2 min, Vector2 max, string id,
+        bool selected, bool hovered, bool occupied)
+    {
+        var lit = Motion.Toward(id, selected, Anim.SelectSpeed);
+
+        if (lit > 0.01f)
+            Elev.Glow(drawList, min, max, Theme.Accent, 0.21f * lit, Rad.Ctl, 9f);
+
+        if (selected || hovered || occupied)
+        {
+            var body = selected
+                ? Vector4.Lerp(Col.Raised, Theme.Accent, 0.12f)
+                : hovered
+                    ? Col.RaisedHigh
+                    : Col.Raised;
+
+            drawList.AddRectFilled(min, max, Col.U32(body), Rad.Ctl);
+
+            drawList.AddLine(
+                new Vector2(min.X + Rad.Ctl, min.Y + (Stroke.Hair / 2f)),
+                new Vector2(max.X - Rad.Ctl, min.Y + (Stroke.Hair / 2f)),
+                Col.U32(new Vector4(1f, 1f, 1f, 0.09f)), Stroke.Hair);
+        }
+
         drawList.AddRect(
-            min, max, ImGui.GetColorU32(Theme.Border), Theme.CardRounding, ImDrawFlags.None, 1.2f * scale);
-
-        using (plugin.Fonts.Icon.PushSafe())
-        {
-            UiHelpers.DrawScaledIcon(
-                drawList, FontAwesomeIcon.Bookmark,
-                new Vector2(min.X + (width / 2f), min.Y + (height / 2f) - (14f * scale)),
-                ImGui.GetColorU32(Theme.TextDisabled));
-        }
-
-        var label = Wardrobe.Active
-            ? "Name what you are wearing above to save it"
-            : "Put a look together, then save it here";
-
-        var measured = ImGui.CalcTextSize(label);
-
-        drawList.AddText(
-            new Vector2(min.X + ((width - measured.X) / 2f), min.Y + (height / 2f) + (10f * scale)),
-            ImGui.GetColorU32(Theme.TextDim),
-            label);
+            min, max,
+            Col.U32(lit > 0.01f
+                ? Theme.Accent with { W = 0.85f * lit }
+                : Col.EdgeRest with { W = occupied ? 0.6f : 0.35f }),
+            Rad.Ctl, ImDrawFlags.None, lit > 0.01f ? Stroke.Edge : Stroke.Hair);
     }
 
-    private const string OriginalPopupId = "##echoglamoriginal";
-
-    /// How many outfits before the fallback popup grows a search box.
-    private const int SearchOutfitsAbove = 8;
-
-    /// Rows of outfits the popup shows before it scrolls.
-    private const int OriginalPopupRows = 8;
-
-    private void DrawOriginalPopup()
+    /// The control that folds the figure away and brings it back.
+    private void DrawFoldButton(Vector2 at)
     {
-        if (!ImGui.BeginPopup(OriginalPopupId))
-            return;
-
-        var scale = UiHelpers.Scale;
-        var rowHeight = 24f * scale;
-        var width = 200f * scale;
-        var all = plugin.Outfits.All;
-
-        if (EchoButton.Draw(
-                "##originalnone", "What I Have On", new Vector2(width, rowHeight),
-                selected: plugin.Rules.Original is null,
-                tooltip: "Goes back to the look you had on before a rule dressed you."))
-        {
-            plugin.Rules.Original = null;
-            ImGui.CloseCurrentPopup();
-        }
-
-        if (all.Count == 0)
-        {
-            ImGui.EndPopup();
-            return;
-        }
-
-        ImGui.Dummy(new Vector2(0f, 6f * scale));
-
-        var searching = all.Count > SearchOutfitsAbove;
-
-        if (searching)
-        {
-            ImGui.SetNextItemWidth(width);
-            ImGui.InputTextWithHint("##originalsearch", "Search outfits...", ref originalSearch, 60);
-            ImGui.Dummy(new Vector2(0f, 4f * scale));
-        }
-
-        var matches = string.IsNullOrWhiteSpace(originalSearch)
-            ? all
-            : [.. all.Where(o => o.Name.Contains(originalSearch, StringComparison.OrdinalIgnoreCase))];
-
-        if (matches.Count == 0)
-        {
-            ImGui.TextColored(Theme.TextDim, "Nothing matches that.");
-            ImGui.EndPopup();
-            return;
-        }
-
-        var rows = Math.Min(matches.Count, OriginalPopupRows);
-        var listHeight = (rows * (rowHeight + ImGui.GetStyle().ItemSpacing.Y)) + (2f * scale);
-
-        var scrolls = matches.Count > OriginalPopupRows;
-        var childWidth = width + (scrolls ? ImGui.GetStyle().ScrollbarSize : 0f);
-
-        if (ImGui.BeginChild("##originallist", new Vector2(childWidth, listHeight), false))
-        {
-            foreach (var outfit in matches)
-            {
-                if (EchoButton.Draw(
-                        $"##original{outfit.Name}", outfit.Name, new Vector2(width, rowHeight),
-                        selected: string.Equals(plugin.Rules.Original, outfit.Name, StringComparison.OrdinalIgnoreCase)))
-                {
-                    plugin.Rules.Original = outfit.Name;
-                    ImGui.CloseCurrentPopup();
-                }
-            }
-        }
-
-        ImGui.EndChild();
-        ImGui.EndPopup();
-    }
-
-    /// One saved outfit.
-    private void DrawOutfitRow(Outfit outfit)
-    {
-        var scale = UiHelpers.Scale;
-        var rowHeight = 50f * scale;
-        var gap = 6f * scale;
-        var iconWidth = 26f * scale;
-        var padX = 12f * scale;
-
-        var origin = ImGui.GetCursorScreenPos();
-        var width = ImGui.GetContentRegionAvail().X;
         var drawList = ImGui.GetWindowDrawList();
+        var size = Metrics.TouchMin;
 
-        var armed = pendingDelete == outfit.Name;
-        var ruleCount = plugin.Rules.CountFor(outfit.Name);
+        ImGui.SetCursorScreenPos(at);
+        ImGui.InvisibleButton("##fold", new Vector2(size, size), ImGuiButtonFlags.MouseButtonLeft);
 
-        var auto = plugin.Rules.Enabled
-                   && string.Equals(plugin.Automation.Claimed, outfit.Name, StringComparison.OrdinalIgnoreCase);
+        var hovered = ImGui.IsItemHovered();
 
-        ImGui.InvisibleButton($"##row{outfit.Name}", new Vector2(width, rowHeight), ImGuiButtonFlags.MouseButtonLeft);
+        if (ImGui.IsItemClicked(ImGuiMouseButton.Left))
+            Compact = !Compact;
 
-        var hovered = ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenBlockedByActiveItem);
-        ImGui.SetItemAllowOverlap();
+        var warm = Motion.Toward("foldfigure", hovered, 20f);
 
-        if (!armed && ImGui.IsItemClicked(ImGuiMouseButton.Right))
-        {
-            rulesFor = outfit.Name;
-            pendingDelete = null;
-        }
-
-        var min = origin;
-        var max = origin + new Vector2(width, rowHeight);
-        var rounding = 8f * scale;
-
-        var fill = armed
-            ? Theme.Bad with { W = 0.14f }
-            : hovered
-                ? Theme.Tinted(0.13f)
-                : auto
-                    ? Theme.Tinted(0.07f)
-                    : Theme.Tinted(0.035f);
-
-        drawList.AddRectFilled(min, max, ImGui.GetColorU32(fill), rounding);
-
-        if (hovered || armed || auto)
-        {
-            var edge = armed ? Theme.Bad with { W = 0.5f } : auto ? Theme.Accent with { W = 0.5f } : Theme.Border;
-            drawList.AddRect(min, max, ImGui.GetColorU32(edge), rounding, ImDrawFlags.None, 1.2f * scale);
-        }
-
-        if (auto && !armed)
-        {
-            drawList.AddRectFilled(
-                min, new Vector2(min.X + (3f * scale), max.Y),
-                ImGui.GetColorU32(Theme.Accent), rounding, ImDrawFlags.RoundCornersLeft);
-        }
-
-        var buttonY = origin.Y + ((rowHeight - (26f * scale)) / 2f);
-
-        var overButton = false;
-
-        var x = origin.X + width - iconWidth - padX;
-
-        if (armed)
-        {
-            ImGui.SetCursorScreenPos(new Vector2(x, buttonY + (1f * scale)));
-            if (EchoButton.BareIcon(
-                    $"##cancel{outfit.Name}", plugin.Fonts.Icon, FontAwesomeIcon.Times, iconWidth,
-                    "Keep it."))
-                pendingDelete = null;
-
-            overButton |= ImGui.IsItemHovered();
-            x -= iconWidth + gap;
-
-            ImGui.SetCursorScreenPos(new Vector2(x, buttonY + (1f * scale)));
-            if (EchoButton.BareIcon(
-                    $"##confirm{outfit.Name}", plugin.Fonts.Icon, FontAwesomeIcon.Check, iconWidth,
-                    "Delete it for good.", colourOverride: Theme.Bad))
-            {
-                plugin.Outfits.Delete(outfit.Name);
-
-                plugin.Rules.Forget(outfit.Name);
-                pendingDelete = null;
-            }
-
-            overButton |= ImGui.IsItemHovered();
-        }
-        else
-        {
-            if (hovered)
-            {
-                ImGui.SetCursorScreenPos(new Vector2(x, buttonY + (1f * scale)));
-                if (EchoButton.BareIcon(
-                        $"##del{outfit.Name}", plugin.Fonts.Icon, FontAwesomeIcon.TrashAlt, iconWidth,
-                        "Delete this outfit.", colourOverride: Theme.Bad))
-                    pendingDelete = outfit.Name;
-
-                overButton |= ImGui.IsItemHovered();
-            }
-
-            x -= gap;
-
-            var wearWidth = EchoButton.ContentSize("Wear").X + (10f * scale);
-            x -= wearWidth;
-
-            ImGui.SetCursorScreenPos(new Vector2(x, buttonY));
-
-            if (EchoButton.Draw(
-                    $"##wear{outfit.Name}", "Wear", new Vector2(wearWidth, 26f * scale),
-                    tooltip: "Put this outfit on.",
-                    primary: hovered))
-                WearOutfit(outfit);
-
-            overButton |= ImGui.IsItemHovered();
-        }
-
-        var labelWidth = MathF.Max(30f * scale, x - origin.X - gap - padX);
-        var lineGap = 3f * scale;
-        var detailSize = ImGui.GetFontSize() * 0.85f;
-        var blockHeight = ImGui.GetTextLineHeight() + lineGap + detailSize;
-        var textTop = origin.Y + ((rowHeight - blockHeight) / 2f);
-
-        drawList.AddText(
-            new Vector2(origin.X + padX, textTop),
-            ImGui.GetColorU32(armed ? Theme.Bad : Theme.Text),
-            UiHelpers.Truncate(armed ? $"Delete \"{outfit.Name}\"?" : outfit.Name, labelWidth));
-
-        var detail = armed
-            ? "This cannot be undone"
-            : Summarise(outfit, ruleCount);
-
-        drawList.AddText(
-            ImGui.GetFont(), detailSize,
-            new Vector2(origin.X + padX, textTop + ImGui.GetTextLineHeight() + lineGap),
-            ImGui.GetColorU32(armed ? Theme.Bad with { W = 0.75f } : Theme.TextDim),
-            UiHelpers.Truncate(detail, labelWidth));
-
-        if (hovered && !overButton && !armed)
-        {
-            UiHelpers.WrappedTooltip(
-                $"Saved {outfit.SavedAtUtc.ToLocalTime():d MMM yyyy, HH:mm}"
-                + "\n\nRight-click to set when this wears itself.");
-        }
-
-        ImGui.SetCursorScreenPos(new Vector2(origin.X, origin.Y + rowHeight + (6f * scale)));
-    }
-
-    /// The second line of an outfit's row: what it is, in words.
-    private static string Summarise(Outfit outfit, int ruleCount)
-    {
-        var parts = new List<string>
-        {
-            $"{outfit.Slots.Count} slot{(outfit.Slots.Count == 1 ? "" : "s")}",
-        };
-
-        if (outfit.HasAppearance)
-            parts.Add("with appearance");
-
-        if (ruleCount > 0)
-            parts.Add($"{ruleCount} condition{(ruleCount == 1 ? "" : "s")}");
-
-        if (outfit.HasAnimation)
-            parts.Add(outfit.AnimationName ?? "plays an animation");
-
-        return string.Join("  ·  ", parts);
-    }
-
-
-    /// One outfit's conditions: when it puts itself on.
-    private void DrawOutfitConditions(string name)
-    {
-        var scale = UiHelpers.Scale;
-
-        if (SubViewHeader($"When to wear \"{name}\""))
-        {
-            rulesFor = null;
-            return;
-        }
-
-        if (!plugin.Outfits.Exists(name))
-        {
-            rulesFor = null;
-            return;
-        }
-
-        var width = ImGui.GetContentRegionAvail().X;
-
-        DrawConditionsPanel(name, width);
-        ImGui.Dummy(new Vector2(0f, 10f * scale));
-
-        DrawAnimationPanel(name, width);
-    }
-
-    /// The rules on one outfit, and the three ways to add another.
-    private void DrawConditionsPanel(string name, float outerWidth)
-    {
-        var scale = UiHelpers.Scale;
-        var rules = plugin.Rules;
-
-        Theme.BeginPanel(outerWidth);
-
-        var width = outerWidth - (28f * scale);
-
-        Theme.SectionHeader("Conditions", ruleWidth: width);
-        ImGui.Dummy(new Vector2(0f, 6f * scale));
-
-        if (!rules.Enabled)
-        {
-            ImGui.PushTextWrapPos(ImGui.GetCursorPosX() + width);
-            ImGui.TextColored(Theme.Warning, "Automatic outfits are switched off, so none of these fire yet.");
-            ImGui.PopTextWrapPos();
-            ImGui.Dummy(new Vector2(0f, 8f * scale));
-        }
-
-        var mine = rules.For(name).ToList();
-
-        if (mine.Count == 0)
-        {
-            ImGui.PushTextWrapPos(ImGui.GetCursorPosX() + width);
-            ImGui.TextColored(Theme.TextDim, "None yet. This outfit only goes on when you put it on.");
-            ImGui.PopTextWrapPos();
-        }
-        else
-        {
-            foreach (var rule in mine)
-            {
-                if (DrawRuleRow(rule, rules.IndexOf(rule), width, showOutfit: false, showOrder: false))
-                    break;
-            }
-
-            if (mine.Count > 1)
-            {
-                ImGui.Dummy(new Vector2(0f, 4f * scale));
-                ImGui.PushTextWrapPos(ImGui.GetCursorPosX() + width);
-                ImGui.TextColored(Theme.TextDim, "When more than one matches, the highest priority wins.");
-                ImGui.PopTextWrapPos();
-            }
-        }
-
-        ImGui.Dummy(new Vector2(0f, 12f * scale));
-
-        var gap = 6f * scale;
-        var height = 30f * scale;
-        var each = MathF.Max(80f * scale, (width - (gap * 2f)) / 3f);
-        var blocked = rules.ReadOnly;
-
-        if (EchoButton.Draw(
-                "##addzone", "Map Or Duty", new Vector2(each, height),
-                iconFont: plugin.Fonts.Icon, icon: FontAwesomeIcon.MapMarkerAlt,
-                enabled: plugin.Zones.Ready && !blocked,
-                tooltip: plugin.Zones.Ready
-                    ? "One place you pick - a city, a zone, a particular dungeon, or your own house."
-                    : "The game's map list could not be read."))
-        {
-            var rule = new OutfitRule { Outfit = name, Trigger = OutfitTrigger.Zone };
-            rules.Add(rule);
-            pickingPlaceFor = rule;
-            zoneSearch = string.Empty;
-        }
-
-        ImGui.SameLine(0f, gap);
-
-        if (EchoButton.Draw(
-                "##addduty", "Any Duty", new Vector2(each, height),
-                iconFont: plugin.Fonts.Icon, icon: FontAwesomeIcon.Dungeon,
-                enabled: !blocked,
-                tooltip: "Any instanced content at all, rather than one you name."))
-        {
-            rules.Add(new OutfitRule { Outfit = name, Trigger = OutfitTrigger.Duty });
-        }
-
-        ImGui.SameLine(0f, gap);
-
-        if (EchoButton.Draw(
-                "##addcombat", "In Combat", new Vector2(each, height),
-                iconFont: plugin.Fonts.Icon, icon: FontAwesomeIcon.FistRaised,
-                enabled: !blocked,
-                tooltip: "While you are fighting, anywhere. It waits a few seconds before changing "
-                    + "back, so it cannot swap between two pulls."))
-        {
-            rules.Add(new OutfitRule { Outfit = name, Trigger = OutfitTrigger.Combat });
-        }
-
-        Theme.EndPanel();
-    }
-
-    /// Every rule from every outfit, in the order they are tried.
-    private void DrawPriority()
-    {
-        var scale = UiHelpers.Scale;
-
-        if (SubViewHeader("Priority"))
-        {
-            priorityOpen = false;
-            return;
-        }
-
-        var outerWidth = ImGui.GetContentRegionAvail().X;
-
-        Theme.BeginPanel(outerWidth);
-
-        var width = outerWidth - (28f * scale);
-
-        Theme.SectionHeader("Tried from the top", ruleWidth: width);
-        ImGui.Dummy(new Vector2(0f, 6f * scale));
-
-        ImGui.PushTextWrapPos(ImGui.GetCursorPosX() + width);
-        ImGui.TextColored(Theme.TextDim,
-            "The first one that matches is what you wear, so being in a duty and in combat at once is "
-            + "decided here.");
-        ImGui.PopTextWrapPos();
-
-        ImGui.Dummy(new Vector2(0f, 10f * scale));
-
-        var rules = plugin.Rules.Rules.ToList();
-
-        if (rules.Count == 0)
-        {
-            ImGui.TextColored(Theme.TextDim, "No rules yet.");
-            Theme.EndPanel();
-            return;
-        }
-
-        for (var i = 0; i < rules.Count; i++)
-        {
-            if (DrawRuleRow(rules[i], i, width, showOutfit: true, showOrder: true))
-                break;
-        }
-
-        Theme.EndPanel();
-    }
-
-    /// A Back button and a title, shared by the sub-views.
-    private bool SubViewHeader(string title)
-    {
-        var scale = UiHelpers.Scale;
-
-        var back = EchoButton.Draw(
-            "##rulesback", "Back", new Vector2(0f, 26f * scale),
-            iconFont: plugin.Fonts.Icon, icon: FontAwesomeIcon.ChevronLeft);
-
-        ImGui.SameLine(0f, 10f * scale);
-        ImGui.AlignTextToFramePadding();
-
-        using (plugin.Fonts.Header.PushSafe())
-            ImGui.TextUnformatted(UiHelpers.Truncate(title, ImGui.GetContentRegionAvail().X));
-
-        ImGui.Dummy(new Vector2(0f, 12f * scale));
-
-        return back;
-    }
-
-    /// One condition, as a card.
-    private bool DrawRuleRow(OutfitRule rule, int id, float width, bool showOutfit, bool showOrder)
-    {
-        var scale = UiHelpers.Scale;
-        var rowHeight = 46f * scale;
-        var gap = 6f * scale;
-        var iconWidth = 24f * scale;
-        var padX = 10f * scale;
-        var badge = 26f * scale;
-
-        var origin = ImGui.GetCursorScreenPos();
-        var drawList = ImGui.GetWindowDrawList();
-
-        var active = ReferenceEquals(plugin.Automation.ActiveRule, rule) && plugin.Rules.Enabled;
-
-        ImGui.InvisibleButton($"##rulerow{id}", new Vector2(width, rowHeight), ImGuiButtonFlags.MouseButtonLeft);
-
-        var hovered = ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenBlockedByActiveItem);
-        ImGui.SetItemAllowOverlap();
-
-        var min = origin;
-        var max = origin + new Vector2(width, rowHeight);
-        var rounding = 8f * scale;
-
-        var fill = hovered
-            ? Theme.Tinted(0.13f)
-            : active
-                ? Theme.Tinted(0.07f)
-                : Theme.Tinted(0.035f);
-
-        drawList.AddRectFilled(min, max, ImGui.GetColorU32(fill), rounding);
-
-        if (hovered || active)
-        {
-            drawList.AddRect(
-                min, max, ImGui.GetColorU32(active ? Theme.Accent with { W = 0.5f } : Theme.Border),
-                rounding, ImDrawFlags.None, 1.2f * scale);
-        }
-
-        if (active)
-        {
-            drawList.AddRectFilled(
-                min, new Vector2(min.X + (3f * scale), max.Y),
-                ImGui.GetColorU32(Theme.Accent), rounding, ImDrawFlags.RoundCornersLeft);
-        }
-
-        var buttonY = origin.Y + ((rowHeight - iconWidth) / 2f);
-        var x = origin.X + width - iconWidth - padX;
-
-        if (hovered)
-        {
-            ImGui.SetCursorScreenPos(new Vector2(x, buttonY));
-
-            if (EchoButton.BareIcon(
-                    $"##ruledel{id}", plugin.Fonts.Icon, FontAwesomeIcon.TrashAlt, iconWidth,
-                    "Remove this condition.", colourOverride: Theme.Bad))
-            {
-                plugin.Rules.Remove(rule);
-                return true;
-            }
-        }
-
-        x -= iconWidth + gap;
-
-        ImGui.SetCursorScreenPos(new Vector2(x, buttonY));
-
-        if (EchoButton.BareIcon(
-                $"##ruleon{id}", plugin.Fonts.Icon,
-                rule.Enabled ? FontAwesomeIcon.ToggleOn : FontAwesomeIcon.ToggleOff, iconWidth,
-                rule.Enabled ? "On. Click to stop it firing." : "Off. Click to switch it back on.",
-                colourOverride: rule.Enabled ? Theme.Accent : Theme.TextDisabled))
-        {
-            plugin.Rules.Toggle(rule, !rule.Enabled);
-        }
-
-        x -= iconWidth + gap;
-
-        if (showOrder)
-        {
-            ImGui.SetCursorScreenPos(new Vector2(x, buttonY));
-            if (EchoButton.BareIcon(
-                    $"##ruledown{id}", plugin.Fonts.Icon, FontAwesomeIcon.ChevronDown,
-                    iconWidth, "Lower priority."))
-            {
-                plugin.Rules.Move(rule, 1);
-                return true;
-            }
-
-            x -= iconWidth + gap;
-
-            ImGui.SetCursorScreenPos(new Vector2(x, buttonY));
-            if (EchoButton.BareIcon(
-                    $"##ruleup{id}", plugin.Fonts.Icon, FontAwesomeIcon.ChevronUp,
-                    iconWidth, "Higher priority."))
-            {
-                plugin.Rules.Move(rule, -1);
-                return true;
-            }
-
-            x -= iconWidth + gap;
-        }
-
-        if (rule.Trigger == OutfitTrigger.Zone)
-        {
-            var changeWidth = EchoButton.ContentSize("Change").X + (10f * scale);
-            x -= changeWidth - iconWidth;
-
-            ImGui.SetCursorScreenPos(new Vector2(x, origin.Y + ((rowHeight - (24f * scale)) / 2f)));
-
-            if (EchoButton.Draw(
-                    $"##rulezone{id}", "Change", new Vector2(changeWidth, 24f * scale),
-                    tooltip: "Pick a different map or duty."))
-            {
-                pickingPlaceFor = rule;
-                zoneSearch = string.Empty;
-                return true;
-            }
-
-            x -= gap;
-        }
-
-        var plateMin = new Vector2(origin.X + padX, origin.Y + ((rowHeight - badge) / 2f));
-        var plateMax = plateMin + new Vector2(badge, badge);
-        var tint = rule.Enabled ? Theme.Accent : Theme.TextDisabled;
-
-        drawList.AddRectFilled(plateMin, plateMax, ImGui.GetColorU32(tint with { W = 0.14f }), 7f * scale);
+        var lean = (Compact ? 1f : -1f) * Sp.Xxs * warm;
 
         using (plugin.Fonts.Icon.PushSafe())
         {
             UiHelpers.DrawScaledIcon(
                 drawList,
-                rule.Trigger switch
-                {
-                    OutfitTrigger.Zone => rule.HouseId != 0 ? FontAwesomeIcon.Home : FontAwesomeIcon.MapMarkerAlt,
-                    OutfitTrigger.Duty => FontAwesomeIcon.Dungeon,
-                    _ => FontAwesomeIcon.FistRaised,
-                },
-                plateMin + new Vector2(badge / 2f, badge / 2f),
-                ImGui.GetColorU32(rule.Enabled ? tint : Theme.TextDisabled));
-        }
-
-        var textLeft = plateMax.X + (10f * scale);
-        var labelWidth = MathF.Max(30f * scale, x - textLeft - gap);
-        var (headline, detail) = Describe(rule);
-
-        if (showOutfit)
-            detail = $"{detail}  ·  {rule.Outfit}";
-
-        var lineGap = 3f * scale;
-        var detailSize = ImGui.GetFontSize() * 0.85f;
-        var blockHeight = ImGui.GetTextLineHeight() + lineGap + detailSize;
-        var textTop = origin.Y + ((rowHeight - blockHeight) / 2f);
-
-        drawList.AddText(
-            new Vector2(textLeft, textTop),
-            ImGui.GetColorU32(rule.Enabled ? Theme.Text : Theme.TextDisabled),
-            UiHelpers.Truncate(headline, labelWidth));
-
-        drawList.AddText(
-            ImGui.GetFont(), detailSize,
-            new Vector2(textLeft, textTop + ImGui.GetTextLineHeight() + lineGap),
-            ImGui.GetColorU32(rule.Enabled ? Theme.TextDim : Theme.TextDisabled),
-            UiHelpers.Truncate(rule.Enabled ? detail : $"{detail}  ·  off", labelWidth));
-
-        ImGui.SetCursorScreenPos(new Vector2(origin.X, origin.Y + rowHeight + (6f * scale)));
-        return false;
-    }
-
-    /// A rule as two lines: where, and what kind of where.
-    private (string Headline, string Detail) Describe(OutfitRule rule)
-    {
-        switch (rule.Trigger)
-        {
-            case OutfitTrigger.Zone when rule.TerritoryId == 0:
-                return ("Nowhere picked yet", "Choose a map or duty");
-
-            case OutfitTrigger.Zone:
-                var place = plugin.Zones.NameFor(rule.TerritoryId);
-
-                if (rule.HouseId != 0)
-                    return (place, $"This house  ·  {rule.HouseAddress ?? "one address"}");
-
-                return (place, plugin.Zones.IsDuty(rule.TerritoryId) ? "A duty" : "Anywhere on this map");
-
-            case OutfitTrigger.Duty:
-                return ("Any duty", "Dungeons, trials and raids");
-
-            case OutfitTrigger.Combat:
-                return ("In combat", "Anywhere, while you are fighting");
-
-            default:
-                return ("Unknown", string.Empty);
+                Compact ? FontAwesomeIcon.AngleDoubleRight : FontAwesomeIcon.AngleDoubleLeft,
+                at + new Vector2((size / 2f) + lean, size / 2f),
+                Col.U32(Vector4.Lerp(Col.TextDim, Theme.Accent, warm)));
         }
     }
-    /// The animation played when this outfit goes on and comes back off.
-    private void DrawAnimationPanel(string name, float outerWidth)
+
+    /// The figure, folded: twelve slots and two destinations as icons, and nothing else.
+    private void DrawRail()
     {
-        var scale = UiHelpers.Scale;
+        var drawList = ImGui.GetWindowDrawList();
+        var avail = ImGui.GetContentRegionAvail();
+        var origin = ImGui.GetCursorScreenPos();
 
-        var outfit = plugin.Outfits.All.FirstOrDefault(o =>
-            string.Equals(o.Name, name, StringComparison.OrdinalIgnoreCase));
+        var size = MathF.Min(avail.X, 36f * UiHelpers.Scale);
+        var left = origin.X + ((avail.X - size) / 2f);
+        var gap = Sp.Xxs;
 
-        if (outfit is null)
-            return;
+        DrawFoldButton(new Vector2(origin.X + ((avail.X - Metrics.TouchMin) / 2f), origin.Y));
 
-        Theme.BeginPanel(outerWidth);
+        var y = origin.Y + Metrics.TouchMin + Sp.Lg;
 
-        var width = outerWidth - (28f * scale);
-
-        Theme.SectionHeader("Animation", ruleWidth: width);
-        ImGui.Dummy(new Vector2(0f, 6f * scale));
-
-        var label = outfit.HasAnimation
-            ? outfit.AnimationName ?? $"Animation {outfit.AnimationId}"
-            : "Nothing";
-
-        if (EchoButton.Draw(
-                "##pickanim", label, new Vector2(0f, 26f * scale),
-                iconFont: plugin.Fonts.Icon, icon: FontAwesomeIcon.Running,
-                selected: outfit.HasAnimation,
-                enabled: plugin.Animations.Ready && !plugin.Outfits.ReadOnly,
-                tooltip: plugin.Animations.Ready
-                    ? "Plays once, every time this outfit goes on. Right-click to clear it."
-                    : "The game's animation list could not be read."))
+        foreach (var slot in GlamSlots.All)
         {
-            pickingAnimationFor = name;
-            animationSearch = string.Empty;
+            ImGui.SetCursorScreenPos(new Vector2(left, y));
+            DrawRailTile(slot, size);
+            y += size + gap;
         }
 
-        if (EchoButton.RightClicked())
-            plugin.Outfits.SetAnimation(name, 0, null);
+        y += Sp.Md;
 
-        if (outfit.HasAnimation)
+        drawList.AddRectFilled(
+            new Vector2(left, y),
+            new Vector2(left + size, y + Stroke.Hair),
+            Col.U32(Col.EdgeRest with { W = 0.55f }));
+
+        y += Stroke.Hair + Sp.Md;
+
+        ImGui.SetCursorScreenPos(new Vector2(left, y));
+        DrawRailPane(RightPane.Outfits, FontAwesomeIcon.Bookmark, "Outfits", size, highlight: false);
+
+        y += size + gap;
+
+        ImGui.SetCursorScreenPos(new Vector2(left, y));
+
+        DrawRailPane(
+            RightPane.Appearance, FontAwesomeIcon.User, "Appearance", size,
+            highlight: Wardrobe.HasAppearanceOverride);
+
+        y += size + Sp.Lg;
+
+        ImGui.SetCursorScreenPos(new Vector2(left, y));
+
+        if (DrawRailAction(
+                "railrevert", FontAwesomeIcon.UndoAlt, size,
+                "Revert All\n\nPuts your real gear and appearance back.",
+                enabled: Wardrobe.Active))
         {
-            ImGui.SameLine(0f, 6f * scale);
-
-            if (EchoButton.Draw(
-                    "##testanim", "Test", new Vector2(0f, 26f * scale),
-                    iconFont: plugin.Fonts.Icon, icon: FontAwesomeIcon.Play,
-                    tooltip: "Plays it now, without changing what you are wearing."))
-            {
-                plugin.Animations.Request(outfit.AnimationId);
-            }
-        }
-
-        if (outfit.HasAnimation)
-        {
-            ImGui.Dummy(new Vector2(0f, 8f * scale));
-
-            var first = outfit.ChangeAfterAnimation;
-
-            if (EchoToggle.Draw(
-                    "##animatefirst", "Change After The Animation", ref first,
-                    "On, the animation plays and you are already wearing the outfit when it ends - a "
-                    + "transformation. Off, the outfit changes straight away and the animation follows "
-                    + "it. On delays the change by however long the animation runs."
-                    + "\n\nEither way it plays again when a rule takes the outfit back off."))
-            {
-                plugin.Outfits.SetAnimateFirst(name, first);
-            }
-
-            if (outfit.ChangeAfterAnimation)
-            {
-                ImGui.Dummy(new Vector2(0f, 6f * scale));
-
-                var hold = outfit.HoldSeconds;
-                var sliderHeight = 22f * scale;
-
-                ImGui.PushStyleVar(ImGuiStyleVar.FrameRounding, sliderHeight / 2f);
-                ImGui.PushStyleVar(ImGuiStyleVar.GrabRounding, sliderHeight / 2f);
-                ImGui.PushStyleVar(ImGuiStyleVar.FramePadding, new Vector2(10f * scale, 3f * scale));
-                ImGui.PushStyleColor(ImGuiCol.FrameBg, Theme.Tinted(0.05f));
-                ImGui.PushStyleColor(ImGuiCol.FrameBgHovered, Theme.Tinted(0.09f));
-                ImGui.PushStyleColor(ImGuiCol.SliderGrab, Theme.Accent);
-                ImGui.PushStyleColor(ImGuiCol.SliderGrabActive, Theme.AccentHover);
-
-                ImGui.SetNextItemWidth(180f * scale);
-
-                if (ImGui.SliderFloat("##animhold", ref hold, 0.2f, 5f, "Wait %.1fs"))
-                    plugin.Outfits.SetAnimationHold(name, hold);
-
-                ImGui.PopStyleColor(4);
-                ImGui.PopStyleVar(3);
-
-                if (ImGui.IsItemHovered())
-                {
-                    UiHelpers.WrappedTooltip(
-                        "How long the animation gets before the clothes change. It waits longer if the "
-                        + "animation is still running, never less than this.");
-                }
-            }
-        }
-
-        ImGui.Dummy(new Vector2(0f, 8f * scale));
-
-        ImGui.PushTextWrapPos(ImGui.GetCursorPosX() + width);
-        ImGui.TextColored(Theme.TextDim,
-            "Only you see this, the same as the glamour itself. The game cuts it short if you are "
-            + "moving or fighting.");
-        ImGui.PopTextWrapPos();
-
-        Theme.EndPanel();
-    }
-
-    /// Choosing the animation, from every emote and player action in the game.
-    private void DrawAnimationPicker(string name)
-    {
-        var scale = UiHelpers.Scale;
-
-        if (SubViewHeader($"Animation for \"{name}\""))
-        {
-            pickingAnimationFor = null;
-            return;
-        }
-
-        var outfit = plugin.Outfits.All.FirstOrDefault(o =>
-            string.Equals(o.Name, name, StringComparison.OrdinalIgnoreCase));
-
-        if (outfit is null)
-        {
-            pickingAnimationFor = null;
-            return;
-        }
-
-        var filterWidth = EchoButton.ContentSize("Emotes").X;
-        var gap = 8f * scale;
-
-        ImGui.SetNextItemWidth(MathF.Max(120f * scale, ImGui.GetContentRegionAvail().X - filterWidth - gap));
-        ImGui.InputTextWithHint("##animsearch", "Search emotes and actions...", ref animationSearch, 60);
-
-        ImGui.SameLine(0f, gap);
-
-        var filterLabel = animationFilter switch
-        {
-            AnimationSource.Emote => "Emotes",
-            AnimationSource.Action => "Actions",
-            _ => "Both",
-        };
-
-        if (EchoButton.Draw(
-                "##animfilter", filterLabel, new Vector2(filterWidth, 26f * scale),
-                selected: animationFilter is not null,
-                tooltip: "Cycles between both, emotes only, and combat and spell animations only."))
-        {
-            animationFilter = animationFilter switch
-            {
-                null => AnimationSource.Emote,
-                AnimationSource.Emote => AnimationSource.Action,
-                _ => null,
-            };
-        }
-
-        ImGui.Dummy(new Vector2(0f, 6f * scale));
-
-        if (EchoButton.Draw(
-                "##animnone", "Nothing", new Vector2(ImGui.GetContentRegionAvail().X, 26f * scale),
-                selected: !outfit.HasAnimation,
-                tooltip: "The outfit goes on without an animation."))
-        {
-            plugin.Outfits.SetAnimation(name, 0, null);
-            pickingAnimationFor = null;
-            return;
-        }
-
-        ImGui.Dummy(new Vector2(0f, 6f * scale));
-
-        if (!ImGui.BeginChild("##animlist", ImGui.GetContentRegionAvail(), false))
-        {
-            ImGui.EndChild();
-            return;
-        }
-
-        var rowHeight = 26f * scale;
-
-        const int Cap = 200;
-        var matches = plugin.Animations.Search(animationSearch, animationFilter).ToList();
-
-        foreach (var entry in matches.Take(Cap))
-        {
-            var picked = outfit.AnimationId == entry.TimelineId;
-
-            if (EchoButton.Draw(
-                    $"##anim{entry.TimelineId}", entry.Name,
-                    new Vector2(ImGui.GetContentRegionAvail().X, rowHeight),
-                    selected: picked,
-                    tooltip: entry.Source == AnimationSource.Emote
-                        ? "An emote. Click to use it, and it plays once so you can see it."
-                        : "A combat or spell animation. Click to use it, and it plays once so you can see it."))
-            {
-                plugin.Outfits.SetAnimation(name, entry.TimelineId, entry.Name);
-
-                plugin.Animations.Request(entry.TimelineId);
-                break;
-            }
-        }
-
-        if (matches.Count > Cap)
-        {
-            ImGui.Dummy(new Vector2(0f, 4f * scale));
-            ImGui.TextColored(Theme.TextDim, $"{matches.Count - Cap} more. Search to narrow it down.");
-        }
-        else if (matches.Count == 0)
-        {
-            ImGui.TextColored(Theme.TextDim, "Nothing matches that.");
-        }
-
-        ImGui.EndChild();
-    }
-
-    /// Picking the one place a zone rule fires in.
-    private void DrawZonePicker()
-    {
-        var scale = UiHelpers.Scale;
-        var rule = pickingPlaceFor!;
-
-        if (SubViewHeader("Pick a map or duty"))
-        {
-            if (rule.TerritoryId == 0)
-                plugin.Rules.Remove(rule);
-
-            pickingPlaceFor = null;
-            return;
-        }
-
-        var filterWidth = EchoButton.ContentSize("Open World").X;
-        var gap = 8f * scale;
-
-        ImGui.SetNextItemWidth(MathF.Max(120f * scale, ImGui.GetContentRegionAvail().X - filterWidth - gap));
-        ImGui.InputTextWithHint("##zonesearch", "Search maps and duties...", ref zoneSearch, 60);
-
-        ImGui.SameLine(0f, gap);
-
-        var filterLabel = zoneDutyFilter switch
-        {
-            true => "Duties",
-            false => "Open World",
-            _ => "Everywhere",
-        };
-
-        if (EchoButton.Draw(
-                "##zonefilter", filterLabel, new Vector2(filterWidth, 26f * scale),
-                selected: zoneDutyFilter is not null,
-                tooltip: "Cycles between everywhere, duties only, and open world only."))
-        {
-            zoneDutyFilter = zoneDutyFilter switch
-            {
-                null => true,
-                true => false,
-                false => null,
-            };
-        }
-
-        ImGui.Dummy(new Vector2(0f, 6f * scale));
-
-        var here = Plugin.ClientState.TerritoryType;
-
-        if (here != 0)
-        {
-            if (plugin.Housing.Current is { } house)
-            {
-                if (EchoButton.Draw(
-                        "##zonehouse", $"This House — {house.Address}",
-                        new Vector2(ImGui.GetContentRegionAvail().X, 26f * scale),
-                        iconFont: plugin.Fonts.Icon, icon: FontAwesomeIcon.Home,
-                        primary: true,
-                        tooltip: "Only this address. Other houses of the same kind will not match."))
-                {
-                    rule.TerritoryId = here;
-                    rule.HouseId = house.Id;
-                    rule.HouseAddress = house.Address;
-                    plugin.Rules.Save();
-                    pickingPlaceFor = null;
-                    return;
-                }
-
-                ImGui.Dummy(new Vector2(0f, 4f * scale));
-            }
-
-            var label = plugin.Housing.Current is null
-                ? $"Here — {plugin.Zones.NameFor(here)}"
-                : $"Any {plugin.Zones.NameFor(here)}";
-
-            if (EchoButton.Draw(
-                    "##zonehere", label,
-                    new Vector2(ImGui.GetContentRegionAvail().X, 26f * scale),
-                    iconFont: plugin.Fonts.Icon, icon: FontAwesomeIcon.MapPin,
-                    tooltip: plugin.Housing.Current is null
-                        ? "The map you are standing in."
-                        : "Every house of this kind, anyone's - not just this address."))
-            {
-                rule.TerritoryId = here;
-                rule.HouseId = 0;
-                rule.HouseAddress = null;
-                plugin.Rules.Save();
-                pickingPlaceFor = null;
-                return;
-            }
-
-            ImGui.Dummy(new Vector2(0f, 6f * scale));
-        }
-
-        if (!ImGui.BeginChild("##zonelist", ImGui.GetContentRegionAvail(), false))
-        {
-            ImGui.EndChild();
-            return;
-        }
-
-        var rowHeight = 24f * scale;
-
-        const int Cap = 200;
-        var matches = plugin.Zones.Search(zoneSearch, zoneDutyFilter).ToList();
-
-        foreach (var zone in matches.Take(Cap))
-        {
-            if (EchoButton.Draw(
-                    $"##zone{zone.TerritoryId}", zone.Label,
-                    new Vector2(ImGui.GetContentRegionAvail().X, rowHeight),
-                    selected: rule.TerritoryId == zone.TerritoryId,
-                    tooltip: zone.IsDuty ? "A duty." : "Open world."))
-            {
-                rule.TerritoryId = zone.TerritoryId;
-
-                rule.HouseId = 0;
-                rule.HouseAddress = null;
-
-                plugin.Rules.Save();
-                pickingPlaceFor = null;
-                break;
-            }
-        }
-
-        if (matches.Count > Cap)
-        {
-            ImGui.Dummy(new Vector2(0f, 4f * scale));
-            ImGui.TextColored(Theme.TextDim, $"{matches.Count - Cap} more. Search to narrow it down.");
-        }
-        else if (matches.Count == 0)
-        {
-            ImGui.TextColored(Theme.TextDim, "Nothing matches that.");
-        }
-
-        ImGui.EndChild();
-    }
-
-    private void WearOutfit(Outfit outfit)
-    {
-        if (Build.Diagnostics)
-        {
-            Plugin.Log.Information(
-                $"[EchoGlam] Wear \"{outfit.Name}\": animation={outfit.AnimationId} "
-                + $"first={outfit.ChangeAfterAnimation} hold={outfit.HoldSeconds:0.0}s");
-        }
-
-        if (outfit.HasAnimation && outfit.ChangeAfterAnimation)
-        {
-            plugin.Animations.PlayThen(outfit.AnimationId, outfit.HoldSeconds, () => PutOn(outfit));
-            return;
-        }
-
-        PutOn(outfit);
-        plugin.Animations.Request(outfit.AnimationId);
-    }
-
-    private void PutOn(Outfit outfit)
-    {
-        Wardrobe.Wear(outfit.ToLook());
-
-        if (outfit.ToAppearance() is { } set)
-        {
-            Wardrobe.SetAppearance(set);
+            Wardrobe.RevertAll();
             appearance.Invalidate();
         }
+
+        ImGui.SetCursorScreenPos(new Vector2(left, y + size + gap));
+
+        if (DrawRailAction(
+                "railload", FontAwesomeIcon.ArrowDown, size,
+                "Load Current\n\nFills the slots with what you are wearing right now, glamour "
+                + "plates and dyes included.",
+                enabled: true))
+        {
+            var current = Wardrobe.CaptureWorn();
+
+            if (current.Count > 0)
+                Wardrobe.Wear(current);
+        }
+    }
+
+    /// One of the two global actions in the folded rail, square and matching the tiles.
+    private bool DrawRailAction(string id, FontAwesomeIcon glyph, float size, string tooltip, bool enabled)
+    {
+        var drawList = ImGui.GetWindowDrawList();
+        var min = ImGui.GetCursorScreenPos();
+        var max = min + new Vector2(size, size);
+
+        var pressed = ImGui.InvisibleButton($"##{id}", new Vector2(size, size), ImGuiButtonFlags.MouseButtonLeft)
+                      && enabled;
+
+        var hovered = enabled && ImGui.IsItemHovered();
+
+        if (ImGui.IsItemHovered())
+            UiHelpers.WrappedTooltip(tooltip);
+
+        PaintTileBody(drawList, min, max, id, selected: false, hovered: hovered, occupied: enabled);
+
+        using (plugin.Fonts.Icon.PushSafe())
+        {
+            UiHelpers.DrawScaledIcon(
+                drawList, glyph, min + new Vector2(size / 2f, size / 2f),
+                Col.U32(!enabled
+                    ? Col.Disabled(Col.TextMuted)
+                    : hovered
+                        ? Theme.Accent
+                        : Col.TextDim));
+        }
+
+        return pressed;
+    }
+
+    /// One slot in the folded rail: its icon, and the tooltip that names it.
+    private void DrawRailTile(GlamSlot slot, float size)
+    {
+        var drawList = ImGui.GetWindowDrawList();
+        var min = ImGui.GetCursorScreenPos();
+        var max = min + new Vector2(size, size);
+
+        var entry = Wardrobe.EntryFor(slot);
+        var item = entry is { } e ? Items.Resolve(e.ItemId) : GlamItem.None;
+        var occupied = entry is not null;
+        var selected = slot == selectedSlot && pane == RightPane.Items;
+
+        if (ImGui.InvisibleButton($"##rail{slot}", new Vector2(size, size), ImGuiButtonFlags.MouseButtonLeft))
+        {
+            selectedSlot = slot;
+            search = string.Empty;
+            pane = RightPane.Items;
+            outfits.Leave();
+        }
+
+        var hovered = ImGui.IsItemHovered();
+
+        if (hovered && occupied && !item.IsNone && ImGui.IsMouseClicked(ImGuiMouseButton.Right))
+            Wardrobe.Set(slot, 0);
+
+        if (hovered)
+        {
+            UiHelpers.WrappedTooltip(occupied
+                ? item.IsNone
+                    ? $"{slot.Label()}\nHidden"
+                    : $"{slot.Label()}\n{item.Name}\n\nRight-click to take it off."
+                : $"{slot.Label()}\nYour own gear");
+        }
+
+        PaintTileBody(drawList, min, max, $"railtile{slot}", selected, hovered, occupied);
+
+        var inset = Sp.Xs;
+        DrawItemIcon(drawList, item, min + new Vector2(inset, inset), size - (inset * 2f), occupied ? 1f : 0.4f);
+    }
+
+    private void DrawRailPane(RightPane target, FontAwesomeIcon glyph, string label, float size, bool highlight)
+    {
+        var drawList = ImGui.GetWindowDrawList();
+        var min = ImGui.GetCursorScreenPos();
+        var max = min + new Vector2(size, size);
+        var selected = pane == target;
+
+        if (ImGui.InvisibleButton($"##railpane{target}", new Vector2(size, size), ImGuiButtonFlags.MouseButtonLeft))
+        {
+            pane = target;
+            outfits.Leave();
+        }
+
+        var hovered = ImGui.IsItemHovered();
+
+        if (hovered)
+            UiHelpers.WrappedTooltip(label);
+
+        PaintTileBody(drawList, min, max, $"railpane{target}", selected, hovered, occupied: true);
+
+        using (plugin.Fonts.Icon.PushSafe())
+        {
+            UiHelpers.DrawScaledIcon(
+                drawList, glyph, min + new Vector2(size / 2f, size / 2f),
+                Col.U32(selected || highlight ? Theme.Accent : Col.TextDim));
+        }
+    }
+
+    /// One slot on the character sheet: what is in it, what colour, and the way to go and change it.
+    private void DrawSlotTile(GlamSlot slot, float width, float height)
+    {
+        var drawList = ImGui.GetWindowDrawList();
+        var scale = UiHelpers.Scale;
+        var min = ImGui.GetCursorScreenPos();
+        var max = min + new Vector2(width, height);
+
+        var entry = Wardrobe.EntryFor(slot);
+        var item = entry is { } e ? Items.Resolve(e.ItemId) : GlamItem.None;
+        var occupied = entry is not null;
+        var selected = slot == selectedSlot && pane == RightPane.Items;
+
+        var clicked = ImGui.InvisibleButton(
+            $"##slot{slot}", new Vector2(width, height), ImGuiButtonFlags.MouseButtonLeft);
+
+        var hovered = ImGui.IsItemHovered();
+
+        if (clicked)
+        {
+            selectedSlot = slot;
+            search = string.Empty;
+            pane = RightPane.Items;
+            outfits.Leave();
+        }
+
+        if (hovered && occupied && !item.IsNone && ImGui.IsMouseClicked(ImGuiMouseButton.Right))
+            Wardrobe.Set(slot, 0);
+
+        if (hovered && occupied)
+        {
+            UiHelpers.WrappedTooltip(item.IsNone
+                ? "Hidden\n\nSelect the slot and press Restore to show your real gear again."
+                : $"{item.Name}\n\nRight-click to take it off.");
+        }
+
+        PaintTileBody(drawList, min, max, $"slottile{slot}", selected, hovered, occupied);
+
+        var icon = 34f * scale;
+        var iconMin = new Vector2(min.X + Sp.Md, min.Y + ((height - icon) / 2f));
+
+        DrawItemIcon(drawList, item, iconMin, icon, occupied ? 1f : 0.4f);
+
+        var textLeft = iconMin.X + icon + Sp.Md;
+        var textRight = max.X - Sp.Md;
+
+        var chip = 10f * scale;
+        var chips = 0;
+
+        if (entry is { } dyed)
+        {
+            if (item.DyeChannels >= 1 && dyed.Stain0 != 0) chips++;
+            if (item.DyeChannels >= 2 && dyed.Stain1 != 0) chips++;
+        }
+
+        var chipRoom = chips > 0 ? (chips * (chip + Sp.Xxs)) + Sp.Sm : 0f;
+
+        var captionLine = Text.CaptionSize * 1.15f;
+        var block = captionLine + Sp.Xxs + ImGui.GetTextLineHeight();
+        var textTop = min.Y + ((height - block) / 2f);
+        var nameTop = textTop + captionLine + Sp.Xxs;
+
+        using (Text.PushCaption())
+        {
+            Text.Tracked(
+                drawList, new Vector2(textLeft, textTop), slot.Label().ToUpperInvariant(),
+                Col.U32(selected ? Theme.Accent : Col.TextMuted), 1.5f,
+                MathF.Max(0f, textRight - textLeft));
+        }
+
+        var name = occupied ? (item.IsNone ? "Hidden" : item.Name) : "Your own";
+
+        drawList.AddText(
+            new Vector2(textLeft, nameTop),
+            Col.U32(occupied ? Col.Text : Col.TextMuted),
+            Text.Truncate(name, MathF.Max(0f, textRight - textLeft - chipRoom)));
+
+        if (chips == 0 || entry is not { } stains)
+            return;
+
+        var chipY = nameTop + ((ImGui.GetTextLineHeight() - chip) / 2f);
+        var chipX = textRight - chip;
+
+        if (item.DyeChannels >= 2 && stains.Stain1 != 0)
+        {
+            UiHelpers.DrawSwatch(drawList, new Vector2(chipX, chipY), chip, Dyes.Resolve(stains.Stain1).Colour);
+            chipX -= chip + Sp.Xxs;
+        }
+
+        if (item.DyeChannels >= 1 && stains.Stain0 != 0)
+            UiHelpers.DrawSwatch(drawList, new Vector2(chipX, chipY), chip, Dyes.Resolve(stains.Stain0).Colour);
+    }
+
+    /// Outfits and Appearance, drawn to match a slot tile because they are the same kind of choice.
+    private void DrawPaneTile(
+        RightPane target, FontAwesomeIcon glyph, string label, string detail,
+        bool highlight, float width, float height)
+    {
+        var drawList = ImGui.GetWindowDrawList();
+        var scale = UiHelpers.Scale;
+        var min = ImGui.GetCursorScreenPos();
+        var max = min + new Vector2(width, height);
+
+        var selected = pane == target;
+
+        if (ImGui.InvisibleButton(
+                $"##pane{target}", new Vector2(width, height), ImGuiButtonFlags.MouseButtonLeft))
+        {
+            pane = target;
+
+            outfits.Leave();
+        }
+
+        var hovered = ImGui.IsItemHovered();
+
+        PaintTileBody(drawList, min, max, $"panetile{target}", selected, hovered, occupied: true);
+
+        var icon = 34f * scale;
+        var centre = new Vector2(min.X + Sp.Md + (icon / 2f), min.Y + (height / 2f));
+
+        using (plugin.Fonts.Icon.PushSafe())
+        {
+            UiHelpers.DrawScaledIcon(
+                drawList, glyph,
+                centre,
+                Col.U32(selected || highlight ? Theme.Accent : Col.TextDim));
+        }
+
+        var textLeft = min.X + Sp.Md + icon + Sp.Md;
+        var room = MathF.Max(0f, max.X - Sp.Md - textLeft);
+
+        var captionLine = Text.CaptionSize * 1.15f;
+        var block = captionLine + Sp.Xxs + ImGui.GetTextLineHeight();
+        var textTop = min.Y + ((height - block) / 2f);
+
+        using (Text.PushCaption())
+        {
+            Text.Tracked(
+                drawList, new Vector2(textLeft, textTop), label.ToUpperInvariant(),
+                Col.U32(selected ? Theme.Accent : Col.TextMuted), 1.5f, room);
+        }
+
+        drawList.AddText(
+            new Vector2(textLeft, textTop + captionLine + Sp.Xxs),
+            Col.U32(highlight ? Col.Text : Col.TextDim),
+            Text.Truncate(detail, room));
     }
 
     private void DrawBuilding()
@@ -1743,245 +711,51 @@ public sealed class DressingRoomTab
             "Every wearable item in the game, straight from its own data. This happens once.");
     }
 
-    private void DrawToolbar()
-    {
-        var scale = UiHelpers.Scale;
-        var buttonHeight = 26f * scale;
-
-        if (EchoButton.Draw(
-                "##revertall", "Revert All", new Vector2(0f, buttonHeight),
-                iconFont: plugin.Fonts.Icon, icon: FontAwesomeIcon.UndoAlt,
-                enabled: Wardrobe.Active,
-                tooltip: "Puts your real gear and appearance back."))
-        {
-            Wardrobe.RevertAll();
-            appearance.Invalidate();
-        }
-
-        ImGui.SameLine(0f, 8f * scale);
-
-        if (EchoButton.Draw(
-                "##copyworn", "Load Current", new Vector2(0f, buttonHeight),
-                iconFont: plugin.Fonts.Icon, icon: FontAwesomeIcon.ArrowDown,
-                tooltip: "Fills the slots with what you are wearing right now, glamour plates and " +
-                         "dyes included, so you can edit from there."))
-        {
-            var current = Wardrobe.CaptureWorn();
-
-            if (current.Count > 0)
-                Wardrobe.Wear(current);
-        }
-
-        ImGui.SameLine(0f, 10f * scale);
-
-        var worn = Wardrobe.Current.Count;
-        ImGui.AlignTextToFramePadding();
-
-        if (Wardrobe.Active)
-        {
-            ImGui.TextColored(
-                Theme.Accent,
-                worn == 1 ? "1 slot glamoured" : $"{worn} slots glamoured");
-        }
-        else
-        {
-            ImGui.TextColored(Theme.TextDim, "Wearing your own gear.");
-        }
-
-        ImGui.SameLine(0f, 0f);
-        var note = "Only you see this.";
-        var noteWidth = ImGui.CalcTextSize(note).X;
-        ImGui.SameLine(ImGui.GetContentRegionAvail().X - noteWidth + ImGui.GetCursorPosX() - ImGui.GetCursorPosX());
-        ImGui.SetCursorPosX(ImGui.GetCursorPosX() + MathF.Max(0f, ImGui.GetContentRegionAvail().X - noteWidth));
-        ImGui.TextColored(Theme.TextDisabled, note);
-
-        if (ImGui.IsItemHovered())
-            UiHelpers.WrappedTooltip(
-                "EchoGlam changes what your own client draws. Other players still see the gear you " +
-                "actually have equipped.");
-    }
-
-    private void DrawSlotList()
-    {
-        var scale = UiHelpers.Scale;
-        Theme.SectionHeader("Slots");
-        ImGui.Dummy(new Vector2(0f, 4f * scale));
-
-        foreach (var slot in GlamSlots.All)
-            DrawSlotRow(slot);
-
-        ImGui.Dummy(new Vector2(0f, 8f * scale));
-
-        DrawPaneRow(
-            RightPane.Outfits, FontAwesomeIcon.Bookmark, "Outfits",
-            plugin.Outfits.Count == 0 ? "None saved" : $"{plugin.Outfits.Count} saved",
-            highlight: false);
-
-        DrawPaneRow(
-            RightPane.Appearance, FontAwesomeIcon.User, "Appearance",
-            Wardrobe.HasAppearanceOverride ? "Changed" : "—",
-            highlight: Wardrobe.HasAppearanceOverride);
-    }
-
-    /// A row under the slots that switches the right pane.
-    private void DrawPaneRow(RightPane target, FontAwesomeIcon icon, string label, string detail, bool highlight)
-    {
-        var scale = UiHelpers.Scale;
-        var iconSize = 30f * scale;
-        var rowHeight = iconSize + (8f * scale);
-
-        var origin = ImGui.GetCursorScreenPos();
-        var width = ImGui.GetContentRegionAvail().X;
-        var drawList = ImGui.GetWindowDrawList();
-
-        var selected = pane == target;
-
-        if (ImGui.InvisibleButton($"##pane{target}", new Vector2(width, rowHeight), ImGuiButtonFlags.MouseButtonLeft))
-        {
-            pane = target;
-
-            pendingDelete = null;
-        }
-
-        var hovered = ImGui.IsItemHovered();
-
-        if (selected || hovered)
-        {
-            drawList.AddRectFilled(
-                origin, origin + new Vector2(width, rowHeight),
-                ImGui.GetColorU32(Theme.Tinted(selected ? 0.24f : 0.12f)), 6f * scale);
-        }
-
-        if (selected)
-        {
-            drawList.AddRectFilled(
-                origin, origin + new Vector2(3f * scale, rowHeight),
-                ImGui.GetColorU32(Theme.Accent), 1.5f * scale);
-        }
-
-        var iconCentre = origin + new Vector2((10f * scale) + (iconSize / 2f), rowHeight / 2f);
-        using (plugin.Fonts.Icon.PushSafe())
-        {
-            UiHelpers.DrawScaledIcon(
-                drawList, icon, iconCentre, ImGui.GetColorU32(highlight ? Theme.Accent : Theme.TextDim));
-        }
-
-        var textX = origin.X + (10f * scale) + iconSize + (8f * scale);
-
-        drawList.AddText(
-            new Vector2(textX, origin.Y + (4f * scale)),
-            ImGui.GetColorU32(highlight ? Theme.Accent : Theme.TextDim), label);
-
-        drawList.AddText(
-            new Vector2(textX, origin.Y + (4f * scale) + ImGui.GetTextLineHeight()),
-            ImGui.GetColorU32(highlight ? Theme.Text : Theme.TextDisabled), detail);
-    }
-
-    private void DrawSlotRow(GlamSlot slot)
-    {
-        var scale = UiHelpers.Scale;
-        var iconSize = 30f * scale;
-        var rowHeight = iconSize + (8f * scale);
-
-        var entry = Wardrobe.EntryFor(slot);
-        var item = entry is { } e ? Items.Resolve(e.ItemId) : GlamItem.None;
-        var overridden = entry is not null;
-
-        var origin = ImGui.GetCursorScreenPos();
-        var width = ImGui.GetContentRegionAvail().X;
-        var drawList = ImGui.GetWindowDrawList();
-
-        var clicked = ImGui.InvisibleButton($"##slot{slot}", new Vector2(width, rowHeight), ImGuiButtonFlags.MouseButtonLeft);
-        var hovered = ImGui.IsItemHovered();
-        var selected = slot == selectedSlot;
-
-        if (clicked)
-        {
-            selectedSlot = slot;
-            search = string.Empty;
-            pane = RightPane.Items;
-            pendingDelete = null;
-        }
-
-        if (hovered && overridden && !item.IsNone && ImGui.IsMouseClicked(ImGuiMouseButton.Right))
-            Wardrobe.Set(slot, 0);
-
-        if (hovered && overridden)
-        {
-            UiHelpers.WrappedTooltip(item.IsNone
-                ? "Hidden\n\nSelect the slot and press Restore to show your real gear again."
-                : $"{item.Name}\n\nRight-click to take it off.");
-        }
-
-        if (selected || hovered)
-        {
-            drawList.AddRectFilled(
-                origin, origin + new Vector2(width, rowHeight),
-                ImGui.GetColorU32(Theme.Tinted(selected ? 0.24f : 0.12f)), 6f * scale);
-        }
-
-        if (selected)
-        {
-            drawList.AddRectFilled(
-                origin, origin + new Vector2(3f * scale, rowHeight),
-                ImGui.GetColorU32(Theme.Accent), 1.5f * scale);
-        }
-
-        var iconMin = origin + new Vector2(10f * scale, 4f * scale);
-        DrawItemIcon(drawList, item, iconMin, iconSize);
-
-        var textX = iconMin.X + iconSize + (8f * scale);
-        var labelColour = overridden ? Theme.Accent : Theme.TextDim;
-
-        drawList.AddText(
-            new Vector2(textX, origin.Y + (4f * scale)), ImGui.GetColorU32(labelColour), slot.Label());
-
-        var name = overridden ? (item.IsNone ? "Hidden" : item.Name) : "—";
-        drawList.AddText(
-            new Vector2(textX, origin.Y + (4f * scale) + ImGui.GetTextLineHeight()),
-            ImGui.GetColorU32(overridden ? Theme.Text : Theme.TextDisabled),
-            UiHelpers.Truncate(name, width - (textX - origin.X) - (8f * scale)));
-    }
-
+    /// The workbench: what you are working on, the controls that narrow the list, and the list.
     private void DrawPicker()
     {
-        var scale = UiHelpers.Scale;
-
-        Theme.SectionHeader(selectedSlot.Label());
-        ImGui.Dummy(new Vector2(0f, 4f * scale));
-
         var dyed = Wardrobe.EntryFor(selectedSlot);
         if (dyeOpenFor == selectedSlot && (dyed is null || !Items.Resolve(dyed.Value.ItemId).IsDyeable))
             CloseDye();
 
         var showingDye = dyeOpenFor == selectedSlot;
 
-        matches = Matches(out hiddenBySource);
+        RefreshMatches();
 
-        DrawSlotActions(showingDye);
-        ImGui.Dummy(new Vector2(0f, 6f * scale));
+        var width = ImGui.GetContentRegionAvail().X;
+
+        DrawSubject(width, showingDye);
+        ImGui.Dummy(new Vector2(0f, Sp.Lg));
 
         if (showingDye)
         {
-            ImGui.SetNextItemWidth(ImGui.GetContentRegionAvail().X);
-            ImGui.InputTextWithHint("##dyesearch", "Search dyes...", ref dyeSearch, 40);
-            ImGui.Dummy(new Vector2(0f, 6f * scale));
+            UiHelpers.SearchField(
+                "##dyesearch", "Search dyes...", ref dyeSearch, width,
+                Metrics.Row, plugin.Fonts.Icon);
         }
         else
         {
-            ImGui.SetNextItemWidth(ImGui.GetContentRegionAvail().X);
-            ImGui.InputTextWithHint("##search", "Search this slot...", ref search, 100);
-
-            if (selectedSlot.IsWeapon())
-            {
-                ImGui.Dummy(new Vector2(0f, 4f * scale));
-                ImGui.TextColored(Theme.TextDim, "Your current job's weapons only. Changing job clears this slot.");
-            }
-
-            ImGui.Dummy(new Vector2(0f, 6f * scale));
+            DrawFilterRow(width);
         }
 
-        if (ImGui.BeginChild("##pickerscroll", ImGui.GetContentRegionAvail(), false))
+        ImGui.Dummy(new Vector2(0f, Sp.Lg));
+
+        var drawList = ImGui.GetWindowDrawList();
+        var wellMin = ImGui.GetCursorScreenPos();
+        var wellSize = new Vector2(width, MathF.Max(100f * UiHelpers.Scale, ImGui.GetContentRegionAvail().Y));
+        var wellMax = wellMin + wellSize;
+
+        drawList.AddRectFilled(wellMin, wellMax, Col.U32(Col.Sunken), Rad.Panel);
+
+        drawList.AddLine(
+            new Vector2(wellMin.X + Rad.Panel, wellMin.Y + (Stroke.Hair / 2f)),
+            new Vector2(wellMax.X - Rad.Panel, wellMin.Y + (Stroke.Hair / 2f)),
+            Col.U32(new Vector4(0f, 0f, 0f, 0.45f)), Stroke.Hair);
+
+        var pad = new Vector2(Sp.Lg, Sp.Lg);
+        ImGui.SetCursorScreenPos(wellMin + pad);
+
+        if (ImGui.BeginChild("##pickerscroll", wellSize - (pad * 2f), false))
         {
             if (showingDye)
             {
@@ -2004,6 +778,300 @@ public sealed class DressingRoomTab
         ImGui.EndChild();
     }
 
+    /// The item the pointer was over in the grid, and the frame it was seen on.
+    private GlamItem? hoveredCell;
+
+    private int hoveredCellFrame = -10;
+
+    /// The one slot you are working on, said properly.
+    private void DrawSubject(float width, bool showingDye)
+    {
+        var drawList = ImGui.GetWindowDrawList();
+        var scale = UiHelpers.Scale;
+        var min = ImGui.GetCursorScreenPos();
+
+        var icon = BannerIconDesign * scale;
+        var height = BannerHeight;
+        var max = min + new Vector2(width, height);
+
+        var entry = Wardrobe.EntryFor(selectedSlot);
+        var worn = entry is { } e ? Items.Resolve(e.ItemId) : GlamItem.None;
+
+        var previewing = hoveredCell is not null && ImGui.GetFrameCount() - hoveredCellFrame <= 1;
+        var subject = previewing && hoveredCell is { } peek ? peek : worn;
+
+        Surface.Paint(min, new Vector2(width, height), SurfaceKind.Raised);
+
+        var iconMin = new Vector2(min.X + Sp.Xl, min.Y + Sp.Xl);
+        DrawItemIcon(drawList, subject, iconMin, icon, subject.IsNone ? 0.4f : 1f);
+
+        var actionsLeft = DrawSubjectActions(min, max, height, showingDye);
+
+        var textLeft = iconMin.X + icon + Sp.Xl;
+        var room = MathF.Max(0f, actionsLeft - Sp.Xl - textLeft);
+
+        var captionLine = Text.CaptionSize * 1.15f;
+        var titleLine = Text.TitleSize * 1.2f;
+        var block = captionLine + Sp.Xs + titleLine + Sp.Xs + captionLine;
+        var top = min.Y + ((height - block) / 2f);
+
+        using (Text.PushCaption())
+        {
+            var label = selectedSlot.Label().ToUpperInvariant();
+
+            var used = Text.Tracked(
+                drawList, new Vector2(textLeft, top), label,
+                Col.U32(entry is not null ? Theme.Accent : Col.TextMuted), 1.8f, room);
+
+            if (previewing)
+            {
+                Pill.Paint(
+                    drawList,
+                    new Vector2(textLeft + used + Sp.Md, top - Sp.Xs),
+                    "PREVIEW", Foundation.Pill.Tone.Info);
+            }
+        }
+
+        var name = !subject.IsNone
+            ? subject.Name
+            : entry is null
+                ? "Your own gear"
+                : "Hidden";
+
+        using (Text.PushTitle())
+        {
+            drawList.AddText(
+                new Vector2(textLeft, top + captionLine + Sp.Xs),
+                Col.U32(subject.IsNone ? Col.TextDim : Col.Text),
+                Text.Truncate(name, room));
+        }
+
+        DrawSubjectMeta(
+            subject, entry, drawList,
+            new Vector2(textLeft, top + captionLine + Sp.Xs + titleLine + Sp.Xs), room);
+
+        ImGui.SetCursorScreenPos(min);
+        ImGui.Dummy(new Vector2(width, height));
+    }
+
+    /// Hide, Restore and Dye, laid from the banner's right edge.
+    private float DrawSubjectActions(Vector2 min, Vector2 max, float height, bool showingDye)
+    {
+        var entry = Wardrobe.EntryFor(selectedSlot);
+        var item = entry is { } e ? Items.Resolve(e.ItemId) : GlamItem.None;
+        var rowHeight = Metrics.Row;
+
+        var dyeable = entry is not null && item.IsDyeable;
+        var dyeLabel = showingDye ? "Back" : "Dye";
+
+        var widths = EchoButton.ContentSize("Hide").X + EchoButton.ContentSize("Restore").X + Sp.Sm;
+
+        if (dyeable)
+            widths += EchoButton.ContentSize(dyeLabel).X + Sp.Sm;
+
+        var left = max.X - Sp.Xl - widths;
+
+        ImGui.SetCursorScreenPos(new Vector2(left, min.Y + ((height - rowHeight) / 2f)));
+
+        var hidden = entry is { ItemId: 0 };
+        var restores = Wardrobe.HiddenBefore(selectedSlot);
+        var restoresName = restores is { } r ? Items.Resolve(r.ItemId).Name : null;
+
+        if (EchoButton.Draw(
+                "##hide", "Hide", new Vector2(0f, rowHeight),
+                selected: hidden,
+                tooltip: !hidden
+                    ? "Show nothing in this slot."
+                    : restoresName is not null
+                        ? $"Put {restoresName} back."
+                        : "Show your real gear again."))
+        {
+            if (!hidden)
+            {
+                Wardrobe.Set(selectedSlot, 0);
+            }
+            else if (!Wardrobe.Unhide(selectedSlot))
+            {
+                Wardrobe.Clear(selectedSlot);
+            }
+        }
+
+        ImGui.SameLine(0f, Sp.Sm);
+
+        if (EchoButton.Draw(
+                "##restore", "Restore", new Vector2(0f, rowHeight),
+                enabled: entry is not null,
+                tooltip: "Hand this slot back to the game and show your real gear."))
+            Wardrobe.Clear(selectedSlot);
+
+        if (dyeable)
+        {
+            ImGui.SameLine(0f, Sp.Sm);
+
+            if (EchoButton.Draw(
+                    "##dye", dyeLabel, new Vector2(0f, rowHeight), selected: showingDye))
+            {
+                if (showingDye)
+                    CloseDye();
+                else
+                    OpenDye(selectedSlot);
+            }
+        }
+
+        return left;
+    }
+
+    /// The line under the name: owned, or what the board wants for it, and any availability pill the piece
+    /// has earned.
+    private void DrawSubjectMeta(
+        GlamItem subject, GlamEntry? entry, ImDrawListPtr drawList, Vector2 at, float room)
+    {
+        if (subject.IsNone)
+        {
+            using (Text.PushCaption())
+            {
+                drawList.AddText(
+                    at, Col.U32(Col.TextMuted),
+                    Text.Truncate(
+                        entry is null
+                            ? "Nothing is glamoured here. Pick something below."
+                            : "Nothing is drawn in this slot.",
+                        room));
+            }
+
+            return;
+        }
+
+        var x = at.X;
+
+        var chip = 12f * UiHelpers.Scale;
+        var chips = 0;
+
+        if (entry is { } worn && subject.DyeChannels > 0)
+        {
+            if (worn.Stain0 != 0) chips++;
+            if (subject.DyeChannels >= 2 && worn.Stain1 != 0) chips++;
+        }
+
+        var rightEdge = at.X + room;
+        var limit = rightEdge - (chips > 0 ? (chips * (chip + Sp.Xs)) + Sp.Lg : 0f);
+        room = MathF.Max(0f, limit - at.X);
+
+        string note;
+        Vector4 tone;
+
+        if (plugin.Owned.Contains(subject.ItemId))
+        {
+            note = "You own this";
+            tone = Col.Success;
+        }
+        else if (!subject.IsMarketable)
+        {
+            note = "Not sold on the board";
+            tone = Col.TextMuted;
+        }
+        else
+        {
+            var quote = plugin.Prices.Ask(subject.ItemId, GalleryState.Character.World);
+
+            note = quote.State switch
+            {
+                MarketState.Listed => $"{MarketPrices.Gil(quote.Cheapest)} on the board",
+                MarketState.Loading => "Checking the board...",
+                MarketState.Empty => "None listed on the board",
+                _ => string.Empty,
+            };
+
+            tone = quote.State == MarketState.Listed ? Col.TextDim : Col.TextMuted;
+        }
+
+        if (note.Length > 0)
+        {
+            using (Text.PushCaption())
+            {
+                drawList.AddText(at, Col.U32(tone), Text.Truncate(note, room));
+                x += Text.Width(Text.Truncate(note, room)) + Sp.Lg;
+            }
+        }
+
+        foreach (var pill in AvailabilityPills.For(subject))
+        {
+            var pillWidth = Pill.Measure(pill.Label);
+
+            if (x + pillWidth > limit)
+                break;
+
+            Pill.Paint(
+                drawList, new Vector2(x, at.Y - (Sp.Xxs * 2f)), pill.Label,
+                pill.Colour == Theme.Warning ? Foundation.Pill.Tone.Caution : Foundation.Pill.Tone.Info);
+
+            x += pillWidth + Sp.Xs;
+        }
+
+        if (chips == 0 || entry is not { } stains)
+            return;
+
+        var chipX = rightEdge - chip;
+        var chipY = at.Y + (((Text.CaptionSize * 1.15f) - chip) / 2f);
+
+        if (subject.DyeChannels >= 2 && stains.Stain1 != 0)
+        {
+            UiHelpers.DrawSwatch(drawList, new Vector2(chipX, chipY), chip, Dyes.Resolve(stains.Stain1).Colour);
+            chipX -= chip + Sp.Xs;
+        }
+
+        if (stains.Stain0 != 0)
+            UiHelpers.DrawSwatch(drawList, new Vector2(chipX, chipY), chip, Dyes.Resolve(stains.Stain0).Colour);
+    }
+
+    /// The search box and the three filters, on one line, with the search taking whatever the filters do not.
+    private void DrawFilterRow(float width)
+    {
+        var icons = plugin.Fonts.Icon;
+
+        var rowHeight = Metrics.Row;
+        var weapon = selectedSlot.IsWeapon();
+
+        var reserved = 0f;
+
+        if (!weapon)
+            reserved += EchoButton.ContentSize(JobFilterLabel, icons, FontAwesomeIcon.Filter).X + Sp.Md;
+
+        reserved += EchoButton.ContentSize(SourceFilterLabel, icons, FontAwesomeIcon.Tags).X + Sp.Md;
+        reserved += EchoButton.ContentSize("Owned", icons, FontAwesomeIcon.BoxOpen).X;
+
+        UiHelpers.SearchField(
+            "##search", "Search this slot...", ref search,
+            MathF.Max(140f * UiHelpers.Scale, width - reserved - Sp.Xl),
+            rowHeight, plugin.Fonts.Icon);
+
+        if (!weapon)
+        {
+            ImGui.SameLine(0f, Sp.Xl);
+            DrawJobFilter(rowHeight);
+            ImGui.SameLine(0f, Sp.Md);
+        }
+        else
+        {
+            ImGui.SameLine(0f, Sp.Xl);
+        }
+
+        DrawAvailabilityFilter(rowHeight);
+        ImGui.SameLine(0f, Sp.Md);
+        DrawOwnedFilter(rowHeight);
+
+        if (!weapon)
+            return;
+
+        ImGui.Dummy(new Vector2(0f, Sp.Xs));
+
+        using (Text.PushCaption())
+        {
+            ImGui.TextColored(
+                Theme.TextDim, "Your current job's weapons only. Changing job clears this slot.");
+        }
+    }
+
     /// Where the item list was left, and the position to put it back to on the frame after the dye grid
     /// closes.
     private float itemScroll;
@@ -2024,79 +1092,20 @@ public sealed class DressingRoomTab
         restoreItemScroll = itemScroll;
     }
 
-    /// showingDye - Whether the dye grid is what is below this row.
-    private void DrawSlotActions(bool showingDye)
-    {
-        var scale = UiHelpers.Scale;
-        var height = 24f * scale;
-
-        var entry = Wardrobe.EntryFor(selectedSlot);
-        var item = entry is { } e ? Items.Resolve(e.ItemId) : GlamItem.None;
-
-        var hidden = entry is { ItemId: 0 };
-        var restores = Wardrobe.HiddenBefore(selectedSlot);
-        var restoresName = restores is { } r ? Items.Resolve(r.ItemId).Name : null;
-
-        if (EchoButton.Draw("##hide", "Hide", new Vector2(0f, height),
-                selected: hidden,
-                tooltip: !hidden
-                    ? "Show nothing in this slot."
-                    : restoresName is not null
-                        ? $"Put {restoresName} back."
-                        : "Show your real gear again."))
-        {
-            if (!hidden)
-            {
-                Wardrobe.Set(selectedSlot, 0);
-            }
-            else if (!Wardrobe.Unhide(selectedSlot))
-            {
-                Wardrobe.Clear(selectedSlot);
-            }
-        }
-
-        ImGui.SameLine(0f, 6f * scale);
-
-        if (EchoButton.Draw("##restore", "Restore", new Vector2(0f, height),
-                enabled: entry is not null,
-                tooltip: "Hand this slot back to the game and show your real gear."))
-            Wardrobe.Clear(selectedSlot);
-
-        if (entry is not null && item.IsDyeable)
-        {
-            ImGui.SameLine(0f, 6f * scale);
-            var open = dyeOpenFor == selectedSlot;
-
-            if (EchoButton.Draw("##dye", open ? "Back to items" : "Dye", new Vector2(0f, height), selected: open))
-            {
-                if (open)
-                    CloseDye();
-                else
-                    OpenDye(selectedSlot);
-            }
-        }
-
-        if (showingDye)
-            return;
-
-        if (!selectedSlot.IsWeapon())
-            DrawJobFilter(height);
-
-        DrawAvailabilityFilter(height);
-        DrawOwnedFilter(height);
-    }
-
     private const string AvailabilityPopupId = "##echoglamavailability";
+
+    /// THE COUNT IS OF ITEMS, NOT OF BOXES TICKED.
+    private string SourceFilterLabel =>
+        hideStore || hideSeasonal || hideExclusive ? $"Sources ({hiddenBySource})" : "Sources";
+
+    private string JobFilterLabel =>
+        selectedJob is { } id ? JobList.Find(id)?.Abbreviation ?? "All Jobs" : "All Jobs";
 
     /// Hides gear that cannot simply be gone and got.
     private void DrawAvailabilityFilter(float rowHeight)
     {
-        var scale = UiHelpers.Scale;
-        ImGui.SameLine(0f, 8f * scale);
-
         var on = hideStore || hideSeasonal || hideExclusive;
-
-        var label = on ? $"Sources ({hiddenBySource})" : "Sources";
+        var label = SourceFilterLabel;
 
         if (EchoButton.Draw(
                 "##availabilityfilter", label,
@@ -2130,7 +1139,7 @@ public sealed class DressingRoomTab
             return;
 
         var scale = UiHelpers.Scale;
-        var width = 260f * scale;
+        var width = Modal.Width(ModalSize.Small);
 
         Theme.SectionHeader("Hide by source", ruleWidth: width);
         ImGui.Dummy(new Vector2(0f, 4f * scale));
@@ -2161,9 +1170,6 @@ public sealed class DressingRoomTab
     /// Narrows the picker to gear this character can actually get at.
     private void DrawOwnedFilter(float rowHeight)
     {
-        var scale = UiHelpers.Scale;
-        ImGui.SameLine(0f, 8f * scale);
-
         var owned = plugin.Owned;
 
         if (EchoButton.Draw(
@@ -2224,14 +1230,10 @@ public sealed class DressingRoomTab
     /// The job filter, as one button that opens a picker.
     private void DrawJobFilter(float rowHeight)
     {
-        var scale = UiHelpers.Scale;
-        ImGui.SameLine(0f, 12f * scale);
-
         var job = selectedJob is { } id ? JobList.Find(id) : null;
-        var label = job is { } j ? j.Abbreviation : "All jobs";
 
         if (EchoButton.Draw(
-                "##jobfilter", label, new Vector2(0f, rowHeight),
+                "##jobfilter", JobFilterLabel, new Vector2(0f, rowHeight),
                 iconFont: plugin.Fonts.Icon, icon: FontAwesomeIcon.Filter,
                 selected: selectedJob is not null,
                 tooltip: job is { } sel
@@ -2260,7 +1262,7 @@ public sealed class DressingRoomTab
         ImGui.Dummy(new Vector2(0f, 4f * scale));
 
         if (EchoButton.Draw(
-                "##joball", "All jobs", new Vector2(width, 24f * scale),
+                "##joball", "All Jobs", new Vector2(width, 24f * scale),
                 selected: selectedJob is null))
         {
             selectedJob = null;
@@ -2342,6 +1344,8 @@ public sealed class DressingRoomTab
         var gap = CellGapDesign * scale;
         var iconSize = CellIconDesign * scale;
 
+        hoveredCell = null;
+
         if (matches.Count == 0)
         {
             var reason = search.Length > 0
@@ -2359,7 +1363,10 @@ public sealed class DressingRoomTab
                                 ? "Everything in this slot is hidden by the source filter."
                                 : "Nothing your character can wear fits this slot.";
 
-            ImGui.TextColored(Theme.TextDim, reason);
+            Notice.Empty(
+                ImGui.GetContentRegionAvail().X, FontAwesomeIcon.Search,
+                "Nothing to show", reason);
+
             return;
         }
 
@@ -2372,7 +1379,8 @@ public sealed class DressingRoomTab
 
         var drawList = ImGui.GetWindowDrawList();
 
-        var rowHeight = cell + ImGui.GetTextLineHeight() + gap;
+        var nameLine = Text.CaptionSize * 1.25f;
+        var rowHeight = cell + nameLine + gap;
 
         var clipper = new ImGuiListClipper();
         clipper.Begin(rows, rowHeight);
@@ -2427,31 +1435,31 @@ public sealed class DressingRoomTab
 
         if (hovered)
         {
-            UiHelpers.WrappedTooltip(item.IsDyeable
-                ? $"{item.Name}\n\nRight-click to wear it and pick its dyes."
-                : item.Name);
+            hoveredCell = item;
+            hoveredCellFrame = ImGui.GetFrameCount();
+
+            if (item.IsDyeable)
+                UiHelpers.WrappedTooltip("Right-click to wear it and pick its dyes.");
         }
 
-        var body = selected ? Theme.Tinted(0.30f) : hovered ? Theme.Tinted(0.16f) : Theme.Panel;
-        drawList.AddRectFilled(origin, origin + new Vector2(cell, cell), ImGui.GetColorU32(body), 6f * scale);
+        var max = origin + new Vector2(cell, cell);
+
+        Cell.Paint(drawList, origin, max, selected, hovered);
 
         var inset = (cell - iconSize) / 2f;
         DrawItemIcon(drawList, item, origin + new Vector2(inset, inset), iconSize);
 
-        if (selected)
+        var nameLine = Text.CaptionSize * 1.25f;
+
+        using (Text.PushCaption())
         {
-            drawList.AddRect(
-                origin, origin + new Vector2(cell, cell), ImGui.GetColorU32(Theme.Accent),
-                6f * scale, ImDrawFlags.None, 2f * scale);
+            drawList.AddText(
+                new Vector2(origin.X, origin.Y + cell + (2f * scale)),
+                Col.U32(Cell.Ink(selected, hovered)),
+                Text.Truncate(item.Name, cell));
         }
 
-        var label = UiHelpers.Truncate(item.Name, cell);
-        drawList.AddText(
-            new Vector2(origin.X, origin.Y + cell + (2f * scale)),
-            ImGui.GetColorU32(selected ? Theme.Accent : Theme.TextDim),
-            label);
-
-        ImGui.Dummy(new Vector2(cell, ImGui.GetTextLineHeight()));
+        ImGui.Dummy(new Vector2(cell, nameLine));
         ImGui.EndGroup();
     }
 
@@ -2538,26 +1546,10 @@ public sealed class DressingRoomTab
     /// Kept across opens rather than cleared each time.
     private string dyeSearch = string.Empty;
 
-    private void DrawItemIcon(ImDrawListPtr drawList, GlamItem item, Vector2 min, float size, float alpha = 1f)
-    {
-        var max = min + new Vector2(size, size);
-
-        if (item.IsNone || item.IconId == 0)
-        {
-            drawList.AddRect(
-                min, max, ImGui.GetColorU32(new Vector4(1f, 1f, 1f, 0.10f * alpha)),
-                4f * UiHelpers.Scale, ImDrawFlags.None, 1f * UiHelpers.Scale);
-            return;
-        }
-
-        var texture = Plugin.TextureProvider.GetFromGameIcon(new GameIconLookup(item.IconId)).GetWrapOrDefault();
-        if (texture == null)
-            return;
-
-        drawList.AddImage(
-            texture.Handle, min, max, Vector2.Zero, Vector2.One,
-            ImGui.GetColorU32(new Vector4(1f, 1f, 1f, alpha)));
-    }
+    /// SHARED NOW, because the outfits pane draws gear too.
+    private static void DrawItemIcon(
+        ImDrawListPtr drawList, GlamItem item, Vector2 min, float size, float alpha = 1f) =>
+        ItemIcon.Draw(drawList, item, min, size, alpha);
 
     /// Items in the selected slot that this character could actually wear, narrowed by the job filter and the
     /// search box.

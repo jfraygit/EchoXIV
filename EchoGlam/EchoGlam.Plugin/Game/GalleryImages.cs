@@ -18,8 +18,12 @@ public sealed class GalleryImages : IDisposable
     {
         public IDalamudTextureWrap? Texture;
 
-        /// Set when the fetch or the decode failed.
+        /// Set when the fetch or the decode failed for good - a 404, a 410, or a picture that came back and
+        /// would not decode.
         public bool Failed;
+
+        /// When a RECOVERABLE failure happened, as a wall clock, or null.
+        public DateTime? SoftFailedUtc;
 
         /// Frame this was last drawn on, for eviction.
         public long LastUsed;
@@ -47,6 +51,16 @@ public sealed class GalleryImages : IDisposable
             if (cache.TryGetValue(key, out var existing))
             {
                 existing.LastUsed = frame;
+
+                if (existing.Texture is null
+                    && !existing.Failed
+                    && existing.SoftFailedUtc is { } failedAt
+                    && DateTime.UtcNow - failedAt >= RetryAfter)
+                {
+                    existing.SoftFailedUtc = null;
+                    _ = Task.Run(() => LoadAsync(url, key, maxEdge, existing), shutdown.Token);
+                }
+
                 return existing.Texture;
             }
 
@@ -58,12 +72,41 @@ public sealed class GalleryImages : IDisposable
         }
     }
 
-    /// Whether this URL has been tried and failed, so a card can draw "unavailable" rather than a spinner
-    /// that never resolves.
+    /// How long a recoverable failure waits before it is worth asking again.
+    private static readonly TimeSpan RetryAfter = TimeSpan.FromSeconds(6);
+
+    /// Status codes where asking again cannot change the answer.
+    private static bool Permanent(System.Net.HttpStatusCode? status) =>
+        status is System.Net.HttpStatusCode.NotFound
+            or System.Net.HttpStatusCode.Gone
+            or System.Net.HttpStatusCode.Forbidden;
+
+    /// Whether this URL has been tried and failed for good, so a card can draw "unavailable" rather than a
+    /// spinner that never resolves.
     public bool Failed(string url)
     {
         lock (gate)
             return cache.TryGetValue(url, out var entry) && entry.Failed;
+    }
+
+    /// Drops every cached texture whose URL starts with this, so the next draw fetches again.
+    public void Forget(string urlPrefix)
+    {
+        List<IDalamudTextureWrap> dropped = [];
+
+        lock (gate)
+        {
+            foreach (var key in cache.Keys.Where(k => k.StartsWith(urlPrefix, StringComparison.Ordinal)).ToList())
+            {
+                if (cache[key].Texture is { } texture)
+                    dropped.Add(texture);
+
+                cache.Remove(key);
+            }
+        }
+
+        foreach (var texture in dropped)
+            texture.Dispose();
     }
 
     private async Task LoadAsync(string url, string key, int maxEdge, Entry entry)
@@ -93,12 +136,19 @@ public sealed class GalleryImages : IDisposable
         catch (OperationCanceledException)
         {
         }
-        catch (Exception ex)
+        catch (HttpRequestException http) when (Permanent(http.StatusCode))
         {
             lock (gate)
                 entry.Failed = true;
 
-            Plugin.Log.Warning($"[EchoGlam] Gallery image failed: {url} - {ex.Message}");
+            Plugin.Log.Warning($"[EchoGlam] Gallery image is not there: {url} - {http.StatusCode}.");
+        }
+        catch (Exception ex)
+        {
+            lock (gate)
+                entry.SoftFailedUtc = DateTime.UtcNow;
+
+            Plugin.Log.Warning($"[EchoGlam] Gallery image failed, will retry: {url} - {ex.Message}");
         }
     }
 

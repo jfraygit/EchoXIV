@@ -11,6 +11,7 @@ using Dalamud.Interface.Textures.TextureWraps;
 using EchoGlam.Game;
 using EchoGlam.Shared;
 using EchoGlam.UI.Controls;
+using EchoGlam.UI.Foundation;
 
 namespace EchoGlam.UI;
 
@@ -23,6 +24,9 @@ public sealed class SubmitPane : IDisposable
 
     /// The gallery's own image cache, shared rather than a second one.
     private readonly GalleryImages images;
+
+    /// The tag chooser, which owns the band it is showing and what has been typed into its search.
+    private readonly TagPicker tagPicker = new("submit", TagPicker.Mode.Many);
 
     /// One screenshot in the form: either a new one on its way up, or one the glamour being edited already
     /// has.
@@ -41,6 +45,9 @@ public sealed class SubmitPane : IDisposable
     }
 
     private readonly List<Attachment> attachments = [];
+
+    /// Which attachment the plate is showing.
+    private int shown;
 
     private string title = string.Empty;
     private string description = string.Empty;
@@ -76,9 +83,14 @@ public sealed class SubmitPane : IDisposable
 
     private bool capturing;
     private bool publishing;
-    private bool pickingFile;
     private string? problem;
     private string? done;
+
+    /// The id of a submission that has just landed, handed from the sending task to the draw loop.
+    private volatile string? finished;
+
+    /// Whether that landing was a deletion rather than a save.
+    private bool removed;
 
     private List<string> recentFiles = [];
     private readonly Dictionary<string, IDalamudTextureWrap?> recentThumbnails = [];
@@ -94,6 +106,14 @@ public sealed class SubmitPane : IDisposable
     /// Whether the pane is showing.
     public bool IsOpen { get; private set; }
 
+    /// Whether anything has been put into the form.
+    private bool HasContent =>
+        attachments.Count > 0
+        || !string.IsNullOrWhiteSpace(title)
+        || !string.IsNullOrWhiteSpace(description)
+        || chosenTags.Count > 0
+        || jobId != 0;
+
     private GalleryState State => plugin.Gallery;
 
     public void Dispose()
@@ -106,11 +126,19 @@ public sealed class SubmitPane : IDisposable
 
         attachments.Clear();
         recentThumbnails.Clear();
+
+        cropper.Dispose();
     }
 
     /// Opens the form for the look currently on the character.
     public void OpenForCurrentLook()
     {
+        if (editingId is null && HasContent)
+        {
+            IsOpen = true;
+            return;
+        }
+
         Reset();
 
         look = new Dictionary<GlamSlot, GlamEntry>(plugin.Wardrobe.Current);
@@ -126,6 +154,12 @@ public sealed class SubmitPane : IDisposable
     /// Opens the form against something already published, to change it.
     public void OpenForEdit(GlamourDetail entry)
     {
+        if (editingId == entry.Id)
+        {
+            IsOpen = true;
+            return;
+        }
+
         Reset();
 
         editingId = entry.Id;
@@ -151,10 +185,27 @@ public sealed class SubmitPane : IDisposable
         IsOpen = true;
     }
 
-    public void Close()
+    /// Puts the pane away and KEEPS what is in it.
+    public void Close() => IsOpen = false;
+
+    /// Starts again: empties the form and re-reads the look from the character.
+    private void Clear()
     {
-        IsOpen = false;
+        var entry = editing;
         Reset();
+
+        if (entry is GlamourDetail published)
+        {
+            OpenForEdit(published);
+            return;
+        }
+
+        look = new Dictionary<GlamSlot, GlamEntry>(plugin.Wardrobe.Current);
+        appearance = plugin.Wardrobe.CurrentAppearance;
+
+        problem = look.Count == 0
+            ? "There's nothing in your wardrobe slots yet. Put a look together in the Dressing Room first."
+            : null;
     }
 
     private void Reset()
@@ -163,6 +214,7 @@ public sealed class SubmitPane : IDisposable
             attachment.Dispose();
 
         attachments.Clear();
+        shown = 0;
         title = string.Empty;
         description = string.Empty;
         descriptionUnwrapped = false;
@@ -198,319 +250,825 @@ public sealed class SubmitPane : IDisposable
         ? (author.Name, author.World)
         : (State.MyProfile?.DisplayName ?? string.Empty, State.MyProfile?.HomeWorld ?? string.Empty);
 
+
+    /// The picture column, which is the same width the gallery's detail page gives a glamour.
+    private const float PlateDesign = 420f;
+
+    /// One thumbnail in the rail under the plate.
+    private const float ThumbDesign = 64f;
+
     public void Draw()
     {
         var scale = UiHelpers.Scale;
         State.EnsureSettings();
         RefreshAuthor();
 
-        cropper.Draw();
-
-        DrawHeader();
-        ImGui.Dummy(new Vector2(0f, 8f * scale));
-
-        if (!ImGui.BeginChild("##submitscroll", ImGui.GetContentRegionAvail(), false))
+        if (finished is { } landed)
         {
-            ImGui.EndChild();
+            var wasRemoval = removed;
+
+            finished = null;
+            removed = false;
+
+            Reset();
+            IsOpen = false;
+
+            if (wasRemoval)
+                Removed?.Invoke(landed);
+            else
+                Published?.Invoke(landed);
+
             return;
         }
 
-        var available = ImGui.GetContentRegionAvail().X;
-        var gap = 12f * scale;
+        cropper.Draw();
 
-        var columns = available >= (StackBelow * scale);
-        var pictureWidth = columns ? MathF.Min(available * 0.42f, 460f * scale) : available;
-        var formWidth = columns ? available - pictureWidth - gap : available;
+        DrawRecentPopup();
+        DrawDeletePopup();
+        DrawClearPopup();
+        DrawRulesPopup();
 
-        ImGui.BeginGroup();
-        DrawScreenshots(pictureWidth);
-        ImGui.EndGroup();
-
-        if (columns)
-            ImGui.SameLine(0f, gap);
-        else
-            ImGui.Dummy(new Vector2(0f, gap));
-
-        ImGui.BeginGroup();
-
-        DrawDetails(formWidth);
-        ImGui.Dummy(new Vector2(0f, gap));
-
-        DrawLookSummary(formWidth);
-        ImGui.Dummy(new Vector2(0f, gap));
-
-        DrawPublish(formWidth);
-
-        ImGui.EndGroup();
-
-        ImGui.EndChild();
-    }
-
-    /// Below this the two columns stack.
-    private const float StackBelow = 760f;
-
-    private void DrawHeader()
-    {
-        var scale = UiHelpers.Scale;
-
-        if (EchoButton.Draw(
-                "##submitback", "Back", new Vector2(0f, 26f * scale),
-                iconFont: plugin.Fonts.Icon, icon: FontAwesomeIcon.ChevronLeft))
+        if (DrawTopBar())
+        {
             Close();
+            return;
+        }
 
-        ImGui.SameLine(0f, 10f * scale);
-        ImGui.AlignTextToFramePadding();
+        ImGui.Dummy(new Vector2(0f, Sp.Lg));
 
-        using (plugin.Fonts.Header.PushSafe())
-            ImGui.TextUnformatted(editingId is null ? "Publish Outfit" : "Edit Outfit");
+        var halo = EchoButton.GlowReach;
+
+        var available = ImGui.GetContentRegionAvail() - new Vector2(halo, halo);
+        var origin = ImGui.GetCursorScreenPos();
+
+        var column = (PlateDesign * scale) + Sp.Xxl;
+        var formWidth = MathF.Max(320f * scale, available.X - column);
+
+
+        DrawPlate(column - Sp.Xxl, available.Y);
+
+        var rule = origin.X + column - (Sp.Xxl / 2f);
+
+        ImGui.GetWindowDrawList().AddRectFilled(
+            new Vector2(rule, origin.Y),
+            new Vector2(rule + Stroke.Hair, origin.Y + available.Y),
+            Col.U32(Col.EdgeRest with { W = 0.5f }));
+
+        var left = origin.X + column;
+
+        ImGui.SetCursorScreenPos(new Vector2(left, origin.Y));
+        var describe = DrawDescribeBand(formWidth, available.Y);
+
+        ImGui.SetCursorScreenPos(new Vector2(left, origin.Y + describe));
+        var file = DrawFileBand(formWidth);
+
+        var consumed = describe + file;
+
+        ImGui.SetCursorScreenPos(new Vector2(left, origin.Y + consumed));
+        DrawSendBand(formWidth, MathF.Max(Metrics.RowTall * 3f, available.Y - consumed));
     }
 
+    /// The chrome band: the way out, what state the form is in, and the controls that undo rather than do.
+    private bool DrawTopBar()
+    {
+        var drawList = ImGui.GetWindowDrawList();
+        var min = ImGui.GetCursorScreenPos();
+        var width = ImGui.GetContentRegionAvail().X;
+        var height = Metrics.TouchMin;
 
-    private void DrawScreenshots(float outerWidth)
+        var leaving = DrawBackLink(drawList, min, height);
+
+        var top = min.Y + ((height - Capsule.Height) / 2f);
+        var right = min.X + width;
+
+        if (editingId is not null)
+        {
+            var deleteWidth = Capsule.Width("Delete", FontAwesomeIcon.TrashAlt);
+            right -= deleteWidth;
+
+            if (Capsule.Button(
+                    "##unpublish", new Vector2(right, top), "Delete", FontAwesomeIcon.TrashAlt,
+                    "Takes this glamour off the board for good. Your local outfit is untouched.",
+                    tone: Col.Danger,
+                    enabled: !publishing))
+                ImGui.OpenPopup(DeletePopupId);
+
+            right -= Sp.Sm;
+        }
+
+        var label = editingId is null ? "Clear" : "Reset";
+        var clearWidth = Capsule.Width(label, FontAwesomeIcon.Eraser);
+        right -= clearWidth;
+
+        if (Capsule.Button(
+                "##clearform", new Vector2(right, top), label, FontAwesomeIcon.Eraser,
+                editingId is null
+                    ? "Empties the form and starts again from the look you have on."
+                    : "Throws away your unsaved changes and goes back to what is published.",
+                enabled: !publishing && HasContent))
+            ImGui.OpenPopup(ClearPopupId);
+
+        if (editingId is null && HasContent)
+        {
+            var draftWidth = Capsule.Width("Draft");
+            right -= Sp.Sm + draftWidth;
+
+            Capsule.Marker(
+                drawList, new Vector2(right, top), "Draft",
+                tooltip: "Kept from last time, including the look it was started from. Clear starts again.");
+        }
+
+        return leaving;
+    }
+
+    /// The way back, as a link rather than a button.
+    private bool DrawBackLink(ImDrawListPtr drawList, Vector2 min, float height) =>
+        BackLink.Draw(drawList, plugin.Fonts.Icon, "##submitback", "Back", min, height);
+
+
+    /// The cover picture at the size it deserves, the rail that chooses it, and the three ways to add one.
+    private void DrawPlate(float width, float height)
     {
         var scale = UiHelpers.Scale;
         var maximum = Math.Max(1, State.Settings.MaximumImages);
+        var origin = ImGui.GetCursorScreenPos();
 
-        Theme.BeginPanel(outerWidth);
+        var railHeight = RailHeight();
+        var sources = Metrics.Row;
 
-        var width = outerWidth - (28f * scale);
+        var forPlate = height - railHeight - sources - (Sp.Lg * 2f);
+        var plateWidth = MathF.Max(0f, MathF.Min(width, forPlate * ImageProcessor.ShotAspect));
+        var plateHeight = ImageProcessor.HeightFor(plateWidth);
 
-        Theme.SectionHeader("Screenshots", ruleWidth: width);
-        ImGui.Dummy(new Vector2(0f, 4f * scale));
+        var plateLeft = origin.X + ((width - plateWidth) / 2f);
+        var plate = new Vector2(plateLeft, origin.Y);
 
-        ImGui.PushTextWrapPos(ImGui.GetCursorPosX() + width);
-        ImGui.TextColored(
-            Theme.TextDim,
-            $"At least one, up to {maximum}. The first is the one the grid shows.");
-        ImGui.PopTextWrapPos();
+        if (plateWidth > Sp.Xxl)
+            DrawCover(plate, new Vector2(plateWidth, plateHeight), maximum);
 
-        ImGui.Dummy(new Vector2(0f, 8f * scale));
+        ImGui.SetCursorScreenPos(new Vector2(origin.X, origin.Y + plateHeight + Sp.Lg));
+        DrawRail(width, maximum);
 
-        var height = 26f * scale;
+        ImGui.SetCursorScreenPos(new Vector2(origin.X, origin.Y + plateHeight + Sp.Lg + railHeight + Sp.Lg));
+        DrawSources(width, maximum);
+
+        ImGui.SetCursorScreenPos(origin);
+        ImGui.Dummy(new Vector2(width, MathF.Min(height, plateHeight + railHeight + sources + (Sp.Lg * 2f))));
+    }
+
+    /// How tall the rail under the plate is.
+    private static float RailHeight() =>
+        ImageProcessor.HeightFor(ThumbDesign * UiHelpers.Scale) + Sp.Sm + Stroke.Mark;
+
+    /// The selected screenshot, large, with what you can do to it on a scrim at its foot.
+    private void DrawCover(Vector2 min, Vector2 size, int maximum)
+    {
+        var drawList = ImGui.GetWindowDrawList();
+        var rounding = Rad.Card;
+        var max = min + size;
+
+        if (attachments.Count == 0)
+        {
+            DrawEmptyPlate(drawList, min, size, rounding, maximum);
+            return;
+        }
+
+        shown = Math.Clamp(shown, 0, attachments.Count - 1);
+
+        drawList.AddRectFilled(min, max, Col.U32(Col.Sunken), rounding);
+
+        var texture = TextureFor(attachments[shown], card: false);
+
+        if (texture != null)
+        {
+            drawList.AddImageRounded(
+                texture.Handle, min, max, Vector2.Zero, Vector2.One,
+                ImGui.GetColorU32(Vector4.One), rounding);
+        }
+        else
+        {
+            using (Text.PushCaption())
+            {
+                var label = "Decoding...";
+
+                drawList.AddText(
+                    min + ((size - new Vector2(Text.Width(label), Text.CaptionSize)) / 2f),
+                    Col.U32(Col.TextMuted), label);
+            }
+        }
+
+        drawList.AddRect(
+            min, max, Col.U32(Col.EdgeRest with { W = 0.7f }), rounding, ImDrawFlags.None, Stroke.Hair);
+
+        DrawCoverActions(drawList, min, size, rounding);
+    }
+
+    /// What you can do to the picture you are looking at, on the picture.
+    private void DrawCoverActions(ImDrawListPtr drawList, Vector2 min, Vector2 size, float rounding)
+    {
+        var clear = Col.U32(new Vector4(0f, 0f, 0f, 0f));
+        var solid = Col.U32(new Vector4(0f, 0f, 0f, 0.78f));
+
+        var band = Capsule.Height + (Sp.Lg * 2f);
+        var foot = rounding * 3f;
+        var bandTop = min.Y + size.Y - band;
+        var fadeBottom = MathF.Max(bandTop, min.Y + size.Y - foot);
+
+        drawList.AddRectFilledMultiColor(
+            new Vector2(min.X, bandTop), new Vector2(min.X + size.X, fadeBottom), clear, clear, solid, solid);
+
+        drawList.AddRectFilled(
+            new Vector2(min.X, fadeBottom), min + size, solid, rounding, ImDrawFlags.RoundCornersBottom);
+
+        var top = min.Y + size.Y - Sp.Lg - Capsule.Height;
+
+        if (shown == 0)
+        {
+            Capsule.Marker(
+                drawList, new Vector2(min.X + Sp.Lg, top), "Cover", FontAwesomeIcon.Star,
+                "The first screenshot is the one the gallery grid shows.");
+        }
+        else if (Capsule.Button(
+                     "##makecover", new Vector2(min.X + Sp.Lg, top), "Make Cover", FontAwesomeIcon.Star,
+                     "Moves this one to the front, so it is the picture the grid shows."))
+        {
+            var moving = attachments[shown];
+            attachments.RemoveAt(shown);
+            attachments.Insert(0, moving);
+            shown = 0;
+        }
+
+        var dropWidth = Capsule.Width("Remove", FontAwesomeIcon.Times);
+
+        if (Capsule.Button(
+                "##dropshot", new Vector2(min.X + size.X - Sp.Lg - dropWidth, top), "Remove",
+                FontAwesomeIcon.Times, "Takes this screenshot off the submission.", tone: Col.Danger))
+        {
+            attachments[shown].Dispose();
+            attachments.RemoveAt(shown);
+            shown = Math.Max(0, shown - 1);
+        }
+    }
+
+    /// The frame with nothing in it.
+    private void DrawEmptyPlate(ImDrawListPtr drawList, Vector2 min, Vector2 size, float rounding, int maximum)
+    {
+        var max = min + size;
+        var centre = min + (size / 2f);
+
+        drawList.AddRectFilled(min, max, Col.U32(Col.Sunken), rounding);
+
+        drawList.AddRect(
+            min, max, Col.U32(Col.Caution with { W = 0.45f }), rounding, ImDrawFlags.None, Stroke.Edge);
+
+        using (plugin.Fonts.Icon.PushSafe())
+        {
+            UiHelpers.DrawScaledIcon(
+                drawList, FontAwesomeIcon.Camera,
+                centre - new Vector2(0f, Sp.Xxl), Col.U32(Col.Caution with { W = 0.6f }));
+        }
+
+        var heading = "A screenshot is required";
+        var detail = $"Take one now, or use one you already have. Up to {maximum}.";
+
+        var leading = ImGui.GetTextLineHeight();
+
+        drawList.AddText(
+            new Vector2(centre.X - (Text.Width(heading) / 2f), centre.Y),
+            Col.U32(Col.Caution), heading);
+
+        using (Text.PushCaption())
+        {
+            drawList.AddText(
+                new Vector2(centre.X - (Text.Width(detail) / 2f), centre.Y + leading + Sp.Xs),
+                Col.U32(Col.TextMuted), detail);
+        }
+    }
+
+    /// Every slot the board allows, filled or not.
+    private void DrawRail(float width, int maximum)
+    {
+        var drawList = ImGui.GetWindowDrawList();
+        var origin = ImGui.GetCursorScreenPos();
+
+        var thumb = ThumbDesign * UiHelpers.Scale;
+        var thumbHeight = ImageProcessor.HeightFor(thumb);
+        var gap = Sp.Sm;
+
+        var run = (thumb * maximum) + (gap * (maximum - 1));
+        var x = origin.X + MathF.Max(0f, (width - run) / 2f);
+
+        for (var i = 0; i < maximum; i++)
+        {
+            var min = new Vector2(x + (i * (thumb + gap)), origin.Y);
+            var max = min + new Vector2(thumb, thumbHeight);
+            var filled = i < attachments.Count;
+            var selected = filled && i == Math.Clamp(shown, 0, Math.Max(0, attachments.Count - 1));
+
+            var cursor = ImGui.GetCursorScreenPos();
+            ImGui.SetCursorScreenPos(min);
+
+            var clicked = ImGui.InvisibleButton(
+                $"##railslot{i}", new Vector2(thumb, thumbHeight), ImGuiButtonFlags.MouseButtonLeft);
+
+            var hovered = ImGui.IsItemHovered();
+            ImGui.SetCursorScreenPos(cursor);
+
+            if (filled && hovered)
+            {
+                ImGui.SetMouseCursor(ImGuiMouseCursor.Hand);
+                UiHelpers.WrappedTooltip(i == 0 ? "The cover. Click to show it above." : "Show this one above.");
+            }
+
+            if (filled && clicked)
+                shown = i;
+
+            drawList.AddRectFilled(min, max, Col.U32(Col.Sunken), Rad.Ctl);
+
+            if (filled)
+            {
+                var texture = TextureFor(attachments[i], card: true);
+
+                if (texture != null)
+                {
+                    drawList.AddImageRounded(
+                        texture.Handle, min, max, Vector2.Zero, Vector2.One,
+                        ImGui.GetColorU32(new Vector4(1f, 1f, 1f, selected || hovered ? 1f : 0.7f)), Rad.Ctl);
+                }
+            }
+            else
+            {
+                using (plugin.Fonts.Icon.PushSafe())
+                {
+                    UiHelpers.DrawScaledIcon(
+                        drawList, FontAwesomeIcon.Plus, (min + max) / 2f,
+                        Col.U32(Col.TextMuted with { W = 0.4f }));
+                }
+            }
+
+            drawList.AddRect(
+                min, max,
+                Col.U32(selected ? Theme.Accent with { W = 0.85f } : Col.EdgeRest with { W = 0.5f }),
+                Rad.Ctl, ImDrawFlags.None, selected ? Stroke.Edge : Stroke.Hair);
+
+            if (!selected)
+                continue;
+
+            drawList.AddRectFilled(
+                new Vector2(min.X, max.Y + Sp.Sm),
+                new Vector2(max.X, max.Y + Sp.Sm + Stroke.Mark),
+                Col.U32(Theme.Accent), Rad.Chip);
+        }
+
+        ImGui.SetCursorScreenPos(origin);
+        ImGui.Dummy(new Vector2(width, RailHeight()));
+    }
+
+    /// The three routes to a picture, none of which leaves the game.
+    private void DrawSources(float width, int maximum)
+    {
         var full = attachments.Count >= maximum;
+        var origin = ImGui.GetCursorScreenPos();
+
+        var take = EchoButton.ContentSize(
+            capturing ? "Taking..." : "Take Screenshot", plugin.Fonts.Icon, FontAwesomeIcon.Camera).X;
+
+        var recent = EchoButton.ContentSize("Use Recent", plugin.Fonts.Icon, FontAwesomeIcon.Images).X;
+        var browse = EchoButton.ContentSize("Browse", plugin.Fonts.Icon, FontAwesomeIcon.FolderOpen).X;
+
+        var run = take + recent + browse + (Sp.Sm * 2f);
+        var x = origin.X + MathF.Max(0f, (width - run) / 2f);
+
+        ImGui.SetCursorScreenPos(new Vector2(x, origin.Y));
 
         if (EchoButton.Draw(
-                "##capture", capturing ? "Taking..." : "Take Screenshot", new Vector2(0f, height),
+                "##capture", capturing ? "Taking..." : "Take Screenshot", new Vector2(take, Metrics.Row),
                 iconFont: plugin.Fonts.Icon, icon: FontAwesomeIcon.Camera,
                 enabled: !capturing && !full,
                 tooltip: full
                     ? "That's as many as one glamour can carry."
-                    : "Hides EchoGlam, captures the game window, then brings you back here."))
+                    : "Hides EchoGlam, captures the game window, then brings you back here.",
+                primary: !full && !capturing))
             Capture();
 
-        ImGui.SameLine(0f, 6f * scale);
+        ImGui.SameLine(0f, Sp.Sm);
 
         if (EchoButton.Draw(
-                "##pickshot", pickingFile ? "Hide Recent" : "Use Recent", new Vector2(0f, height),
+                "##pickshot", "Use Recent", new Vector2(recent, Metrics.Row),
                 iconFont: plugin.Fonts.Icon, icon: FontAwesomeIcon.Images,
-                selected: pickingFile,
                 enabled: !full,
                 tooltip: "Anything already in your screenshots folder - a GPose shot, for instance."))
         {
-            pickingFile = !pickingFile;
-
-            if (pickingFile)
-                LoadRecent();
+            LoadRecent();
+            ImGui.OpenPopup(RecentPopupId);
         }
 
-        ImGui.SameLine(0f, 6f * scale);
+        ImGui.SameLine(0f, Sp.Sm);
 
         if (EchoButton.Draw(
-                "##browseshot", "Browse", new Vector2(0f, height),
+                "##browseshot", "Browse", new Vector2(browse, Metrics.Row),
                 iconFont: plugin.Fonts.Icon, icon: FontAwesomeIcon.FolderOpen,
                 enabled: !full,
                 tooltip: "Pick any image on your machine."))
             Browse();
 
-        if (capturing)
-        {
-            ImGui.SameLine(0f, 10f * scale);
-            ImGui.AlignTextToFramePadding();
-            ImGui.TextColored(Theme.TextDim, "Say cheese.");
-        }
-
-        ImGui.Dummy(new Vector2(0f, 8f * scale));
-
-        if (pickingFile)
-            DrawRecentStrip(width);
-
-        DrawAttachments(width, maximum);
-
-        Theme.EndPanel();
+        ImGui.SetCursorScreenPos(origin);
+        ImGui.Dummy(new Vector2(width, Metrics.Row));
     }
 
-    private void DrawRecentStrip(float width)
+    /// The decoded picture for one attachment, at the size the caller is drawing it.
+    private IDalamudTextureWrap? TextureFor(Attachment attachment, bool card) =>
+        attachment.Existing >= 0 && editing is { } summary
+            ? images.Get(GalleryClient.ImageUrl(summary, attachment.Existing, card))
+            : attachment.Preview;
+
+
+    /// How tall the description box gets.
+    private float DescriptionHeight(float width, float pane)
+    {
+        var limit = Math.Max(1, State.Settings.MaximumDescription);
+        var line = ImGui.GetTextLineHeight();
+
+        var em = Text.Width("abcdefghijklmnopqrstuvwxyz") / 26f;
+        var room = MathF.Max(em, width - (ImGui.GetStyle().FramePadding.X * 2f) - (18f * UiHelpers.Scale));
+        var perLine = MathF.Max(1f, room / em);
+
+        var wanted = (MathF.Ceiling(limit / perLine) + 1f) * line;
+
+        return Math.Clamp(
+            wanted + (ImGui.GetStyle().FramePadding.Y * 2f),
+            line * 4f,
+            MathF.Max(line * 4f, pane * 0.3f));
+    }
+
+    private float DrawDescribeBand(float width, float pane)
+    {
+        var start = ImGui.GetCursorScreenPos();
+        var settings = State.Settings;
+
+        ImGui.BeginGroup();
+
+        Field.Label("Title", title.Length, settings.MaximumTitle, width);
+
+        var titleLimit = settings.MaximumTitle;
+        var descriptionLimit = settings.MaximumDescription;
+
+        Field.PushStyle();
+        ImGui.SetNextItemWidth(width);
+        ImGui.InputTextWithHint("##submittitle", "Name this look...", ref title, titleLimit);
+        Field.PopStyle();
+
+        ImGui.Dummy(new Vector2(0f, Sp.Lg));
+
+        Field.Label("Description", description.Length, settings.MaximumDescription, width);
+
+        var wrapAt = width - (ImGui.GetStyle().FramePadding.X * 2f) - (18f * UiHelpers.Scale);
+
+        if (descriptionUnwrapped || (!descriptionActive && MathF.Abs(wrapAt - descriptionWrap) > 0.5f))
+        {
+            description = UiHelpers.Rewrap(description, wrapAt);
+            descriptionUnwrapped = false;
+        }
+
+        descriptionWrap = wrapAt;
+
+        Field.PushStyle();
+
+        UiHelpers.WrappingInputTextMultiline(
+            "##submitdescription", ref description, descriptionLimit,
+            new Vector2(width, DescriptionHeight(width, pane)), descriptionWrap);
+
+        descriptionActive = ImGui.IsItemActive();
+        Field.PopStyle();
+
+        ImGui.EndGroup();
+        return CloseBand(start, width);
+    }
+
+
+    private float DrawFileBand(float width)
+    {
+        var start = ImGui.GetCursorScreenPos();
+        var settings = State.Settings;
+        var vocabulary = settings.Tags.Length > 0 ? settings.Tags : GalleryTags.All;
+        var maximum = Math.Max(1, settings.MaximumPerGlamour);
+
+        ImGui.BeginGroup();
+
+        Field.Label("Tags", chosenTags.Count, maximum, width);
+
+        var tagsTop = ImGui.GetCursorScreenPos();
+        tagPicker.Field(tagsTop, width, chosenTags, vocabulary, maximum, plugin.Fonts.Icon);
+
+        ImGui.Dummy(new Vector2(width, TagPicker.FieldHeight));
+
+        ImGui.Dummy(new Vector2(0f, Sp.Lg));
+
+        var job = jobId == 0 ? null : JobList.Find(jobId);
+        Field.Label("Built Around", width);
+
+        if (EchoButton.Draw(
+                "##submitjob", job is { } j ? j.Name : "Any Job",
+                new Vector2(EchoButton.ContentSize("Any Job", plugin.Fonts.Icon, FontAwesomeIcon.Filter).X, Metrics.Row),
+                iconFont: plugin.Fonts.Icon, icon: FontAwesomeIcon.Filter,
+                selected: jobId != 0,
+                tooltip: jobId != 0
+                    ? "Right-click to clear it."
+                    : "Optional. It is what the job filter on the board finds."))
+            ImGui.OpenPopup(JobPopupId);
+
+        if (EchoButton.RightClicked())
+            jobId = 0;
+
+        DrawJobPopup();
+
+        ImGui.EndGroup();
+        return CloseBand(start, width);
+    }
+
+
+    /// What is actually going to be published, and the button that does it.
+    private void DrawSendBand(float width, float height)
+    {
+        var drawList = ImGui.GetWindowDrawList();
+        var origin = ImGui.GetCursorScreenPos();
+        var settings = State.Settings;
+        var line = ImGui.GetTextLineHeight();
+
+        using (Text.PushCaption())
+        {
+            Text.Tracked(
+                drawList, origin, "WHAT GETS PUBLISHED", Col.U32(Col.TextMuted), 1.8f, width);
+        }
+
+        var y = origin.Y + (Text.CaptionSize * 1.6f) + Sp.Sm;
+
+
+        if (!plugin.Items.Ready)
+        {
+            drawList.AddText(new Vector2(origin.X, y), Col.U32(Col.TextDim), "Reading the item list...");
+            y += line;
+        }
+        else if (look.Count == 0)
+        {
+            drawList.AddText(
+                new Vector2(origin.X, y), Col.U32(Col.Caution),
+                "Nothing. Put a look together in the Dressing Room first.");
+
+            y += line;
+        }
+        else
+        {
+            var pieces = GlamSlots.All.Where(look.ContainsKey).ToList();
+            var count = $"{pieces.Count} {(pieces.Count == 1 ? "piece" : "pieces")}";
+            var countWidth = Text.Width(count) + Sp.Lg;
+
+            drawList.AddText(new Vector2(origin.X, y), Col.U32(Col.Text), count);
+
+            var names = string.Join(" · ", pieces.Select(s => s.Label()));
+
+            using (Text.PushCaption())
+            {
+                drawList.AddText(
+                    new Vector2(origin.X + countWidth, y + ((line - Text.CaptionSize) / 2f)),
+                    Col.U32(Col.TextMuted),
+                    Text.Truncate(names, MathF.Max(0f, width - countWidth)));
+            }
+
+            if (ImGui.IsMouseHoveringRect(new Vector2(origin.X, y), new Vector2(origin.X + width, y + line)))
+            {
+                UiHelpers.WrappedTooltip(string.Join(
+                    "\n",
+                    pieces.Select(slot => look[slot].ItemId == 0
+                        ? $"{slot.Label()}: nothing shown"
+                        : $"{slot.Label()}: {plugin.Items.Resolve(look[slot].ItemId).Name}")));
+            }
+
+            y += line + Sp.Xs;
+        }
+
+        using (Text.PushCaption())
+        {
+            var who = Author.Name.Length > 0
+                ? $"As {Author.Name}{(Author.World.Length > 0 ? " · " + Author.World : string.Empty)}"
+                : "Waiting for your character";
+
+            var asRace = RaceNames.Describe(author.Race, author.Tribe, author.Sex);
+
+            drawList.AddText(
+                new Vector2(origin.X, y),
+                Col.U32(Author.Name.Length > 0 ? Col.TextDim : Col.Caution),
+                Text.Truncate($"{who}  ·  recorded as {asRace}", width));
+
+            y += Text.CaptionSize * 1.4f;
+        }
+
+        if (appearance is not null)
+        {
+            y += Sp.Sm;
+            ImGui.SetCursorScreenPos(new Vector2(origin.X, y));
+
+            EchoToggle.Draw(
+                "##includeappearance", "Include my appearance", ref includeAppearance,
+                "Your race, face, hair and colours travel with the outfit. Off by default - "
+                + "someone wearing your glamour does not usually mean wearing your face.");
+
+            y = ImGui.GetItemRectMax().Y;
+        }
+
+
+        var missingImage = attachments.Count == 0;
+        var missingTitle = string.IsNullOrWhiteSpace(title);
+        var missingLook = look.Count == 0;
+
+        var missingAuthor = Author.Name.Length == 0;
+
+        var blocked = missingImage || missingTitle || missingLook || missingAuthor
+            || publishing || !State.CanPublish;
+
+        var message = problem ?? done;
+        var caption = Text.CaptionSize * 1.4f;
+
+        var shut = State.CanPublish ? null : "The gallery isn't accepting submissions at the moment.";
+
+        var sendHeight = Metrics.RowTall
+            + (shut is null ? 0f : caption + Sp.Sm)
+            + (message is null ? 0f : Sp.Md + caption)
+            + Sp.Sm + caption;
+
+        var sendTop = MathF.Max(y + (Sp.Xxl * 2f), origin.Y + height - sendHeight);
+
+        var ruleY = sendTop - Sp.Xl;
+
+        if (ruleY > y + Sp.Sm)
+        {
+            drawList.AddRectFilled(
+                new Vector2(origin.X, ruleY),
+                new Vector2(origin.X + width, ruleY + Stroke.Hair),
+                Col.U32(Col.EdgeRest with { W = 0.55f }));
+        }
+
+        var sendY = sendTop;
+
+        if (shut is { } closed)
+        {
+            using (Text.PushCaption())
+                drawList.AddText(new Vector2(origin.X, sendY), Col.U32(Col.Caution), Text.Truncate(closed, width));
+
+            sendY += caption + Sp.Sm;
+        }
+
+        ImGui.SetCursorScreenPos(new Vector2(origin.X, sendY));
+
+        if (EchoButton.Draw(
+                "##publish",
+                publishing ? "Publishing..." : editingId is null ? "Publish To Gallery" : "Save Changes",
+                new Vector2(width, Metrics.RowTall),
+                iconFont: plugin.Fonts.Icon, icon: FontAwesomeIcon.CloudUploadAlt,
+                enabled: !blocked,
+                tooltip: missingTitle ? "Give it a title first."
+                    : missingImage ? "Attach at least one screenshot."
+                    : missingLook ? "There is no look to publish."
+                    : missingAuthor ? "Waiting for your character. Try again in a moment."
+                    : "Everyone browsing the gallery will see this.",
+                primary: !blocked))
+            ImGui.OpenPopup(RulesPopupId);
+
+        var footY = ImGui.GetItemRectMax().Y;
+
+        if (message is not null)
+        {
+            footY += Sp.Md;
+
+            using (Text.PushCaption())
+            {
+                drawList.AddText(
+                    new Vector2(origin.X, footY), Col.U32(problem is null ? Col.Success : Col.Danger),
+                    Text.Truncate(message, width));
+            }
+
+            footY += Text.CaptionSize * 1.4f;
+        }
+
+        footY += Sp.Sm;
+
+        using (Text.PushCaption())
+        {
+            var small = settings.MaximumPerOwner > 0
+                ? $"Public once published, and reportable by anyone who sees it. {settings.MaximumPerOwner} at a time."
+                : "Public once published, and reportable by anyone who sees it.";
+
+            drawList.AddText(
+                new Vector2(origin.X, footY), Col.U32(Col.TextMuted), Text.Truncate(small, width));
+        }
+
+        ImGui.SetCursorScreenPos(origin);
+        ImGui.Dummy(new Vector2(width, height));
+    }
+
+
+    /// Closes a band: the rule under it, and the height it took.
+    private static float CloseBand(Vector2 start, float width)
+    {
+        var ruleY = ImGui.GetItemRectMax().Y + Sp.Lg;
+
+        ImGui.GetWindowDrawList().AddRectFilled(
+            new Vector2(start.X, ruleY),
+            new Vector2(start.X + width, ruleY + Stroke.Hair),
+            Col.U32(Col.EdgeRest with { W = 0.55f }));
+
+        return ruleY + Stroke.Hair + Sp.Lg - start.Y;
+    }
+
+
+
+    private const string RecentPopupId = "##echoglamrecentshots";
+
+    /// The screenshots folder, in a dialog.
+    private void DrawRecentPopup()
     {
         var scale = UiHelpers.Scale;
 
+        ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(18f, 16f) * scale);
+        ImGui.PushStyleVar(ImGuiStyleVar.WindowRounding, Rad.Panel);
+
+        var open = ImGui.BeginPopup(RecentPopupId);
+        ImGui.PopStyleVar(2);
+
+        if (!open)
+            return;
+
+        var width = Modal.Width(ModalSize.Large);
+        ImGui.Dummy(new Vector2(width, 0f));
+
+        using (Text.PushCaption())
+        {
+            Text.Tracked(
+                ImGui.GetWindowDrawList(), ImGui.GetCursorScreenPos(), "YOUR SCREENSHOTS",
+                Col.U32(Col.TextMuted), 1.8f);
+        }
+
+        ImGui.Dummy(new Vector2(width, Text.CaptionSize * 1.6f));
+
         if (!Screenshots.DirectoryExists)
         {
-            ImGui.TextColored(Theme.TextDim, "No screenshots folder found. Take one with the button above.");
+            ImGui.TextColored(Col.TextDim, "No screenshots folder found. Take one from the form instead.");
+            ImGui.EndPopup();
             return;
         }
 
         if (recentFiles.Count == 0)
         {
-            ImGui.TextColored(Theme.TextDim, recentLoaded ? "No screenshots yet." : "Reading your screenshots...");
+            ImGui.TextColored(
+                Col.TextDim, recentLoaded ? "No screenshots yet." : "Reading your screenshots...");
+
+            ImGui.EndPopup();
             return;
         }
 
-        var thumbWidth = 120f * scale;
+        var gap = Sp.Sm;
+        var thumbWidth = (width - (gap * 3f)) / 4f;
         var thumbHeight = thumbWidth * 9f / 16f;
-        var gap = 6f * scale;
-        var perRow = Math.Max(1, (int)((width + gap) / (thumbWidth + gap)));
         var drawList = ImGui.GetWindowDrawList();
 
         for (var i = 0; i < recentFiles.Count; i++)
         {
-            if (i % perRow != 0)
+            if (i % 4 != 0)
                 ImGui.SameLine(0f, gap);
 
             var path = recentFiles[i];
             var pos = ImGui.GetCursorScreenPos();
+            var size = new Vector2(thumbWidth, thumbHeight);
 
-            if (ImGui.InvisibleButton($"##recent{i}", new Vector2(thumbWidth, thumbHeight), ImGuiButtonFlags.MouseButtonLeft))
+            if (ImGui.InvisibleButton($"##recent{i}", size, ImGuiButtonFlags.MouseButtonLeft))
+            {
+                ImGui.CloseCurrentPopup();
                 BeginCrop(path);
+            }
 
             var hovered = ImGui.IsItemHovered();
-            if (hovered)
-                UiHelpers.WrappedTooltip(System.IO.Path.GetFileName(path));
 
-            drawList.AddRectFilled(
-                pos, pos + new Vector2(thumbWidth, thumbHeight),
-                ImGui.GetColorU32(Theme.Tinted(0.05f)), 4f * scale);
+            if (hovered)
+            {
+                ImGui.SetMouseCursor(ImGuiMouseCursor.Hand);
+                UiHelpers.WrappedTooltip(System.IO.Path.GetFileName(path));
+            }
+
+            drawList.AddRectFilled(pos, pos + size, Col.U32(Col.Sunken), Rad.Ctl);
 
             if (recentThumbnails.TryGetValue(path, out var texture) && texture != null)
             {
                 drawList.AddImageRounded(
-                    texture.Handle, pos, pos + new Vector2(thumbWidth, thumbHeight),
-                    Vector2.Zero, Vector2.One, ImGui.GetColorU32(new Vector4(1f, 1f, 1f, hovered ? 1f : 0.85f)),
-                    4f * scale);
+                    texture.Handle, pos, pos + size, Vector2.Zero, Vector2.One,
+                    ImGui.GetColorU32(new Vector4(1f, 1f, 1f, hovered ? 1f : 0.8f)), Rad.Ctl);
             }
 
             drawList.AddRect(
-                pos, pos + new Vector2(thumbWidth, thumbHeight),
-                ImGui.GetColorU32(hovered ? Theme.Accent : Theme.Border),
-                4f * scale, ImDrawFlags.None, 1.2f * scale);
+                pos, pos + size, Col.U32(hovered ? Col.EdgeHover : Col.EdgeRest with { W = 0.5f }),
+                Rad.Ctl, ImDrawFlags.None, Stroke.Hair);
         }
 
-        ImGui.Dummy(new Vector2(0f, 10f * scale));
-    }
-
-    /// How wide one screenshot thumbnail is, and how many of them fit on a row.
-    private static (float Width, int PerRow) ThumbLayout(float width, int maximum, float gap)
-    {
-        var scale = UiHelpers.Scale;
-        var perRow = Math.Max(1, maximum);
-        var thumb = (width - (gap * (perRow - 1))) / perRow;
-
-        while (perRow > 1 && thumb < 96f * scale)
-        {
-            perRow--;
-            thumb = (width - (gap * (perRow - 1))) / perRow;
-        }
-
-        return (MathF.Max(MathF.Min(thumb, 150f * scale), 1f), perRow);
-    }
-
-    private void DrawAttachments(float width, int maximum)
-    {
-        var scale = UiHelpers.Scale;
-        var gap = 8f * scale;
-        var (thumbWidth, perRow) = ThumbLayout(width, maximum, gap);
-        var thumbHeight = ImageProcessor.HeightFor(thumbWidth);
-
-        if (attachments.Count == 0)
-        {
-            var slotWidth = thumbWidth;
-            var slotHeight = thumbHeight;
-
-            var placeholderList = ImGui.GetWindowDrawList();
-            var pos = ImGui.GetCursorScreenPos();
-            ImGui.Dummy(new Vector2(width, slotHeight));
-
-            var min = pos;
-            var max = pos + new Vector2(slotWidth, slotHeight);
-
-            placeholderList.AddRectFilled(min, max, ImGui.GetColorU32(Theme.Tinted(0.05f)), 8f * scale);
-            placeholderList.AddRect(
-                min, max, ImGui.GetColorU32(Theme.Warning with { W = 0.5f }),
-                8f * scale, ImDrawFlags.None, 1.4f * scale);
-
-            using (plugin.Fonts.Icon.PushSafe())
-            {
-                UiHelpers.DrawScaledIcon(
-                    placeholderList, FontAwesomeIcon.Camera,
-                    new Vector2(min.X + (slotWidth / 2f), min.Y + (slotHeight / 2f) - (10f * scale)),
-                    ImGui.GetColorU32(Theme.Warning with { W = 0.7f }));
-            }
-
-            var label = "No screenshot yet";
-            var measured = ImGui.CalcTextSize(label);
-
-            placeholderList.AddText(
-                new Vector2(
-                    min.X + ((slotWidth - measured.X) / 2f),
-                    min.Y + (slotHeight / 2f) + (12f * scale)),
-                ImGui.GetColorU32(Theme.Warning),
-                label);
-
-            return;
-        }
-
-        var drawList = ImGui.GetWindowDrawList();
-
-        for (var i = 0; i < attachments.Count; i++)
-        {
-            if (i % perRow != 0)
-                ImGui.SameLine(0f, gap);
-
-            var pos = ImGui.GetCursorScreenPos();
-            ImGui.Dummy(new Vector2(thumbWidth, thumbHeight));
-
-            drawList.AddRectFilled(
-                pos, pos + new Vector2(thumbWidth, thumbHeight),
-                ImGui.GetColorU32(Theme.Tinted(0.05f)), 4f * scale);
-
-            var slot = attachments[i].Existing;
-            var texture = slot >= 0 && editing is { } summary
-                ? images.Get(GalleryClient.ImageUrl(summary, slot, card: true))
-                : attachments[i].Preview;
-
-            if (texture != null)
-            {
-                drawList.AddImageRounded(
-                    texture.Handle, pos, pos + new Vector2(thumbWidth, thumbHeight),
-                    Vector2.Zero, Vector2.One, ImGui.GetColorU32(Vector4.One), 4f * scale);
-            }
-
-            drawList.AddRect(
-                pos, pos + new Vector2(thumbWidth, thumbHeight), ImGui.GetColorU32(Theme.Border),
-                4f * scale, ImDrawFlags.None, 1.2f * scale);
-
-            if (i == 0)
-            {
-                drawList.AddText(
-                    pos + new Vector2(6f * scale, 5f * scale),
-                    ImGui.GetColorU32(new Vector4(1f, 1f, 1f, 0.85f)), "Cover");
-            }
-
-            var removeSize = 20f * scale;
-            var cursor = ImGui.GetCursorScreenPos();
-            ImGui.SetCursorScreenPos(new Vector2(pos.X + thumbWidth - removeSize - (4f * scale), pos.Y + (4f * scale)));
-
-            if (EchoButton.BareIcon(
-                    $"##dropshot{i}", plugin.Fonts.Icon, FontAwesomeIcon.Times, removeSize,
-                    "Remove this screenshot.", colourOverride: Theme.Bad))
-            {
-                attachments[i].Dispose();
-                attachments.RemoveAt(i);
-                ImGui.SetCursorScreenPos(cursor);
-                return;
-            }
-
-            ImGui.SetCursorScreenPos(cursor);
-        }
+        ImGui.EndPopup();
     }
 
     private void Capture()
@@ -563,8 +1121,6 @@ public sealed class SubmitPane : IDisposable
 
     private void BeginCrop(string path)
     {
-        pickingFile = false;
-
         _ = cropper.OpenAsync(
             path, ImageProcessor.ShotWidth, ImageProcessor.ShotHeight,
             "Frame your glamour",
@@ -575,6 +1131,8 @@ public sealed class SubmitPane : IDisposable
     {
         var attachment = new Attachment { Jpeg = jpeg };
         attachments.Add(attachment);
+
+        shown = attachments.Count - 1;
 
         _ = Task.Run(async () =>
         {
@@ -622,128 +1180,6 @@ public sealed class SubmitPane : IDisposable
     }
 
 
-    private void DrawDetails(float outerWidth)
-    {
-        var scale = UiHelpers.Scale;
-        var settings = State.Settings;
-
-        Theme.BeginPanel(outerWidth);
-
-        var width = outerWidth - (28f * scale);
-
-        Theme.SectionHeader("About it", ruleWidth: width);
-        ImGui.Dummy(new Vector2(0f, 4f * scale));
-
-        var titleLimit = settings.MaximumTitle;
-        var descriptionLimit = settings.MaximumDescription;
-
-        FieldLabel("Title", title.Length, settings.MaximumTitle, width);
-
-        ImGui.PushStyleVar(ImGuiStyleVar.FrameRounding, 8f * scale);
-        ImGui.PushStyleVar(ImGuiStyleVar.FramePadding, new Vector2(10f * scale, 7f * scale));
-        ImGui.PushStyleColor(ImGuiCol.FrameBg, Theme.Tinted(0.04f));
-
-        ImGui.SetNextItemWidth(width);
-        ImGui.InputTextWithHint("##submittitle", "Name this look...", ref title, titleLimit);
-
-        ImGui.PopStyleColor();
-        ImGui.PopStyleVar(2);
-
-        ImGui.Dummy(new Vector2(0f, 8f * scale));
-
-        FieldLabel("Description", description.Length, settings.MaximumDescription, width);
-
-        var wrapAt = width - (ImGui.GetStyle().FramePadding.X * 2f) - (18f * scale);
-
-        if (descriptionUnwrapped || (!descriptionActive && MathF.Abs(wrapAt - descriptionWrap) > 0.5f))
-        {
-            description = UiHelpers.Rewrap(description, wrapAt);
-            descriptionUnwrapped = false;
-        }
-
-        descriptionWrap = wrapAt;
-
-        ImGui.PushStyleVar(ImGuiStyleVar.FrameRounding, 8f * scale);
-        ImGui.PushStyleColor(ImGuiCol.FrameBg, Theme.Tinted(0.04f));
-
-        UiHelpers.WrappingInputTextMultiline(
-            "##submitdescription", ref description, descriptionLimit,
-            new Vector2(width, 78f * scale), descriptionWrap);
-
-        descriptionActive = ImGui.IsItemActive();
-
-        ImGui.PopStyleColor();
-        ImGui.PopStyleVar();
-
-        ImGui.Dummy(new Vector2(0f, 10f * scale));
-
-        FieldLabel("Tags", chosenTags.Count, settings.MaximumPerGlamour, width);
-        ImGui.Dummy(new Vector2(0f, 2f * scale));
-
-        var x = 0f;
-        var height = 22f * scale;
-
-        foreach (var tag in settings.Tags)
-        {
-            var tagWidth = EchoButton.ContentSize(tag).X;
-
-            if (x > 0f && x + tagWidth <= width)
-                ImGui.SameLine(0f, 5f * scale);
-            else if (x > 0f)
-                x = 0f;
-
-            var chosen = chosenTags.Contains(tag);
-
-            if (EchoButton.Draw(
-                    $"##submittag{tag}", tag, new Vector2(0f, height),
-                    accentOverride: chosen ? null : Theme.TextDisabled,
-                    selected: chosen,
-                    enabled: chosen || chosenTags.Count < settings.MaximumPerGlamour))
-            {
-                if (!chosenTags.Remove(tag))
-                    chosenTags.Add(tag);
-            }
-
-            x += tagWidth + (5f * scale);
-        }
-
-        ImGui.Dummy(new Vector2(0f, 10f * scale));
-
-        var job = jobId == 0 ? null : JobList.Find(jobId);
-
-        ImGui.TextColored(Theme.TextDim, "Built around");
-        ImGui.Dummy(new Vector2(0f, 4f * scale));
-
-        if (EchoButton.Draw(
-                "##submitjob", job is { } j ? j.Name : "All Jobs", new Vector2(0f, 24f * scale),
-                iconFont: plugin.Fonts.Icon, icon: FontAwesomeIcon.Filter,
-                selected: jobId != 0,
-                tooltip: jobId != 0 ? "Right-click to clear it." : "Optional. It is what the job filter finds."))
-            ImGui.OpenPopup(JobPopupId);
-
-        if (EchoButton.RightClicked())
-            jobId = 0;
-
-        DrawJobPopup();
-
-        Theme.EndPanel();
-    }
-
-    /// A field's name with its budget at the right end of the same line.
-    private static void FieldLabel(string label, int used, int limit, float width)
-    {
-        var count = $"{used}/{limit}";
-        var origin = ImGui.GetCursorScreenPos();
-
-        ImGui.TextColored(Theme.TextDim, label);
-
-        var colour = used >= limit ? Theme.Bad : used > limit * 0.85f ? Theme.Warning : Theme.TextDisabled;
-
-        ImGui.GetWindowDrawList().AddText(
-            new Vector2(origin.X + width - ImGui.CalcTextSize(count).X, origin.Y),
-            ImGui.GetColorU32(colour), count);
-    }
-
     private const string JobPopupId = "##echoglamsubmitjobs";
 
     private void DrawJobPopup()
@@ -751,24 +1187,23 @@ public sealed class SubmitPane : IDisposable
         if (!ImGui.BeginPopup(JobPopupId))
             return;
 
-        var scale = UiHelpers.Scale;
-        var size = 34f * scale;
+        var size = 34f * UiHelpers.Scale;
         var drawList = ImGui.GetWindowDrawList();
 
-        if (EchoButton.Draw("##nojob", "All Jobs", new Vector2(0f, 24f * scale), selected: jobId == 0))
+        if (EchoButton.Draw("##nojob", "Any Job", new Vector2(0f, Metrics.Row), selected: jobId == 0))
         {
             jobId = 0;
             ImGui.CloseCurrentPopup();
         }
 
-        ImGui.Dummy(new Vector2(0f, 6f * scale));
+        ImGui.Dummy(new Vector2(0f, Sp.Sm));
 
         var index = 0;
 
         foreach (var job in JobList.All)
         {
             if (index > 0 && index % 9 != 0)
-                ImGui.SameLine(0f, 4f * scale);
+                ImGui.SameLine(0f, Sp.Xs);
 
             var pos = ImGui.GetCursorScreenPos();
             var selected = jobId == job.Id;
@@ -794,8 +1229,8 @@ public sealed class SubmitPane : IDisposable
             if (selected)
             {
                 drawList.AddRect(
-                    pos, pos + new Vector2(size, size), ImGui.GetColorU32(Theme.Accent),
-                    4f * scale, ImDrawFlags.None, 2f * scale);
+                    pos, pos + new Vector2(size, size), Col.U32(Theme.Accent),
+                    Rad.Chip, ImDrawFlags.None, Stroke.Mark);
             }
 
             index++;
@@ -804,159 +1239,139 @@ public sealed class SubmitPane : IDisposable
         ImGui.EndPopup();
     }
 
-    /// What is actually going to be published, listed out.
-    private void DrawLookSummary(float outerWidth)
+
+    private const string DeletePopupId = "##echoglamdelete";
+
+    /// The confirmation before a glamour leaves the board.
+    private void DrawDeletePopup()
     {
         var scale = UiHelpers.Scale;
 
-        Theme.BeginPanel(outerWidth);
+        var centre = ImGui.GetMainViewport().GetCenter();
+        ImGui.SetNextWindowPos(centre, ImGuiCond.Appearing, new Vector2(0.5f, 0.5f));
 
-        var width = outerWidth - (28f * scale);
+        ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(24f, 21f) * scale);
+        ImGui.PushStyleVar(ImGuiStyleVar.WindowRounding, Rad.Panel);
+        ImGui.PushStyleVar(ImGuiStyleVar.WindowBorderSize, Stroke.Focus);
+        ImGui.PushStyleColor(ImGuiCol.Border, Col.Danger with { W = 0.7f });
 
-        Theme.SectionHeader("What gets published", ruleWidth: width);
-        ImGui.Dummy(new Vector2(0f, 4f * scale));
+        var open = ImGui.BeginPopupModal(
+            DeletePopupId,
+            ImGuiWindowFlags.AlwaysAutoResize | ImGuiWindowFlags.NoTitleBar | ImGuiWindowFlags.NoMove);
 
-        if (!plugin.Items.Ready)
-        {
-            ImGui.TextColored(Theme.TextDim, "Reading the item list...");
-            Theme.EndPanel();
+        ImGui.PopStyleColor();
+        ImGui.PopStyleVar(3);
+
+        if (!open)
             return;
-        }
 
-        if (look.Count == 0)
-        {
-            ImGui.PushTextWrapPos(ImGui.GetCursorPosX() + width);
-            ImGui.TextColored(Theme.Warning, "Nothing. Put a look together in the Dressing Room first.");
-            ImGui.PopTextWrapPos();
-            Theme.EndPanel();
-            return;
-        }
+        var content = Modal.Width(ModalSize.Small);
+        ImGui.Dummy(new Vector2(content, 0f));
 
-        var names = GlamSlots.All
-            .Where(look.ContainsKey)
-            .Select(slot => look[slot].ItemId == 0
-                ? $"{slot.Label()}: nothing shown"
-                : $"{slot.Label()}: {plugin.Items.Resolve(look[slot].ItemId).Name}")
-            .ToList();
+        using (Text.PushTitle())
+            ImGui.TextUnformatted("Delete this glamour?");
 
-        ImGui.PushTextWrapPos(ImGui.GetCursorPosX() + width);
-        ImGui.TextColored(Theme.TextDim, string.Join("   ·   ", names));
-        ImGui.PopTextWrapPos();
+        ImGui.Dummy(new Vector2(0f, Sp.Lg));
 
-        ImGui.Dummy(new Vector2(0f, 8f * scale));
-
-        ImGui.PushTextWrapPos(ImGui.GetCursorPosX() + width);
+        ImGui.PushTextWrapPos(ImGui.GetCursorPosX() + content);
         ImGui.TextColored(
-            Theme.TextDim,
-            $"Published as {(Author.Name.Length > 0 ? Author.Name : "you")}, "
-            + $"recorded as {RaceNames.Describe(author.Race, author.Tribe, author.Sex)} - a glamour reads "
-            + "differently on different races, so the board lets people filter by it.");
+            Col.TextDim,
+            "It comes off the board for good, with every vote and save it has collected. "
+            + "The outfit in your Dressing Room is untouched.");
+
         ImGui.PopTextWrapPos();
+        ImGui.Dummy(new Vector2(0f, Sp.Xl));
 
-        if (appearance is not null)
-        {
-            ImGui.Dummy(new Vector2(0f, 8f * scale));
+        var deleteWidth = EchoButton.ContentSize("Delete", plugin.Fonts.Icon, FontAwesomeIcon.TrashAlt).X;
+        var keepWidth = EchoButton.ContentSize("Keep It").X;
+        var left = ImGui.GetCursorPosX();
 
-            EchoToggle.Draw(
-                "##includeappearance", "Include my appearance", ref includeAppearance,
-                "Your race, face, hair and colours travel with the outfit. Off by default - "
-                + "someone wearing your glamour does not usually mean wearing your face.");
-        }
+        ImGui.SetCursorPosX(left + MathF.Max(0f, content - deleteWidth - keepWidth - Sp.Md));
 
-        Theme.EndPanel();
-    }
+        if (EchoButton.Draw("##keepit", "Keep It", new Vector2(keepWidth, Metrics.Field)))
+            ImGui.CloseCurrentPopup();
 
-    private void DrawPublish(float outerWidth)
-    {
-        var scale = UiHelpers.Scale;
-        var settings = State.Settings;
-
-        Theme.BeginPanel(outerWidth, Theme.Accent);
-
-        var width = outerWidth - (28f * scale);
-
-        var missingImage = attachments.Count == 0;
-        var missingTitle = string.IsNullOrWhiteSpace(title);
-        var missingLook = look.Count == 0;
-
-        var missingAuthor = Author.Name.Length == 0;
-
-        var blocked = missingImage || missingTitle || missingLook || missingAuthor
-            || publishing || !State.CanPublish;
-
-        if (!State.CanPublish)
-        {
-            ImGui.PushTextWrapPos(ImGui.GetCursorPosX() + width);
-            ImGui.TextColored(Theme.Warning, "The gallery isn't accepting submissions yet.");
-            ImGui.PopTextWrapPos();
-            ImGui.Dummy(new Vector2(0f, 6f * scale));
-        }
-
-        var deleting = editingId is not null;
-        var deleteWidth = deleting
-            ? EchoButton.ContentSize("Delete Glamour", plugin.Fonts.Icon, FontAwesomeIcon.TrashAlt).X
-            : 0f;
+        ImGui.SameLine(0f, Sp.Md);
 
         if (EchoButton.Draw(
-                "##publish",
-                publishing ? "Publishing..." : editingId is null ? "Publish" : "Save Changes",
-                new Vector2(width, 34f * scale),
-                iconFont: plugin.Fonts.Icon, icon: FontAwesomeIcon.CloudUploadAlt,
-                enabled: !blocked,
-                tooltip: missingTitle ? "Give it a title first."
-                    : missingImage ? "Attach at least one screenshot."
-                    : missingLook ? "There is no look to publish."
-                    : missingAuthor ? "Waiting for your character. Try again in a moment."
-                    : "Everyone browsing the gallery will see this.",
-                primary: !blocked))
-            ImGui.OpenPopup(RulesPopupId);
-
-        DrawRulesPopup();
-
-        if (deleting)
+                "##confirmdelete", "Delete", new Vector2(deleteWidth, Metrics.Field),
+                accentOverride: Col.Danger,
+                iconFont: plugin.Fonts.Icon, icon: FontAwesomeIcon.TrashAlt,
+                enabled: !publishing))
         {
-            ImGui.Dummy(new Vector2(0f, 6f * scale));
-
-            ImGui.SetCursorPosX(ImGui.GetCursorPosX() + MathF.Max(0f, width - deleteWidth));
-
-            if (EchoButton.Draw(
-                    "##unpublish", "Delete Glamour", new Vector2(deleteWidth, 26f * scale),
-                    accentOverride: Theme.Bad,
-                    iconFont: plugin.Fonts.Icon, icon: FontAwesomeIcon.TrashAlt,
-                    enabled: !publishing,
-                    tooltip: "Takes it off the board for good. Your local outfit is untouched."))
-                Unpublish();
+            ImGui.CloseCurrentPopup();
+            Unpublish();
         }
 
-        ImGui.Dummy(new Vector2(0f, 8f * scale));
+        ImGui.EndPopup();
+    }
 
-        if (problem is { } message)
-        {
-            ImGui.PushTextWrapPos(ImGui.GetCursorPosX() + width);
-            ImGui.TextColored(Theme.Bad, message);
-            ImGui.PopTextWrapPos();
-        }
+    private const string ClearPopupId = "##echoglamclearform";
 
-        if (done is { } success)
-        {
-            ImGui.PushTextWrapPos(ImGui.GetCursorPosX() + width);
-            ImGui.TextColored(Theme.Good, success);
-            ImGui.PopTextWrapPos();
-        }
+    /// The confirmation before a draft is thrown away.
+    private void DrawClearPopup()
+    {
+        var scale = UiHelpers.Scale;
+        var editingNow = editingId is not null;
 
-        ImGui.Dummy(new Vector2(0f, 6f * scale));
-        ImGui.PushTextWrapPos(ImGui.GetCursorPosX() + width);
+        var centre = ImGui.GetMainViewport().GetCenter();
+        ImGui.SetNextWindowPos(centre, ImGuiCond.Appearing, new Vector2(0.5f, 0.5f));
 
+        ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(24f, 21f) * scale);
+        ImGui.PushStyleVar(ImGuiStyleVar.WindowRounding, Rad.Panel);
+        ImGui.PushStyleVar(ImGuiStyleVar.WindowBorderSize, Stroke.Focus);
+        ImGui.PushStyleColor(ImGuiCol.Border, Col.Caution with { W = 0.7f });
+
+        var open = ImGui.BeginPopupModal(
+            ClearPopupId,
+            ImGuiWindowFlags.AlwaysAutoResize | ImGuiWindowFlags.NoTitleBar | ImGuiWindowFlags.NoMove);
+
+        ImGui.PopStyleColor();
+        ImGui.PopStyleVar(3);
+
+        if (!open)
+            return;
+
+        var content = Modal.Width(ModalSize.Small);
+        ImGui.Dummy(new Vector2(content, 0f));
+
+        using (Text.PushTitle())
+            ImGui.TextUnformatted(editingNow ? "Throw away your changes?" : "Clear this draft?");
+
+        ImGui.Dummy(new Vector2(0f, Sp.Lg));
+
+        ImGui.PushTextWrapPos(ImGui.GetCursorPosX() + content);
         ImGui.TextColored(
-            Theme.TextDisabled,
-            settings.MaximumPerOwner > 0
-                ? $"You can have {settings.MaximumPerOwner} glamours published at once. Anything published here "
-                  + "is public, and can be reported by anyone who sees it."
-                : "Anything published here is public, and can be reported by anyone who sees it.");
+            Col.TextDim,
+            editingNow
+                ? "The form goes back to what is published. Nothing on the board changes."
+                : "The title, description, tags and screenshots go, and the form starts again from "
+                  + "the look you have on now.");
 
         ImGui.PopTextWrapPos();
+        ImGui.Dummy(new Vector2(0f, Sp.Xl));
 
-        Theme.EndPanel();
+        var clearWidth = EchoButton.ContentSize(editingNow ? "Reset" : "Clear", plugin.Fonts.Icon, FontAwesomeIcon.Eraser).X;
+        var keepWidth = EchoButton.ContentSize("Keep It").X;
+        var left = ImGui.GetCursorPosX();
+
+        ImGui.SetCursorPosX(left + MathF.Max(0f, content - clearWidth - keepWidth - Sp.Md));
+
+        if (EchoButton.Draw("##keepdraft", "Keep It", new Vector2(keepWidth, Metrics.Field)))
+            ImGui.CloseCurrentPopup();
+
+        ImGui.SameLine(0f, Sp.Md);
+
+        if (EchoButton.Draw(
+                "##confirmclear", editingNow ? "Reset" : "Clear", new Vector2(clearWidth, Metrics.Field),
+                accentOverride: Col.Caution,
+                iconFont: plugin.Fonts.Icon, icon: FontAwesomeIcon.Eraser))
+        {
+            ImGui.CloseCurrentPopup();
+            Clear();
+        }
+
+        ImGui.EndPopup();
     }
 
     private const string RulesPopupId = "##echoglamrules";
@@ -966,15 +1381,15 @@ public sealed class SubmitPane : IDisposable
     {
         var scale = UiHelpers.Scale;
 
-        var content = 400f * scale;
+        var content = Modal.Width(ModalSize.Medium);
 
         var centre = ImGui.GetMainViewport().GetCenter();
         ImGui.SetNextWindowPos(centre, ImGuiCond.Appearing, new Vector2(0.5f, 0.5f));
 
         ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(24f, 21f) * scale);
-        ImGui.PushStyleVar(ImGuiStyleVar.WindowRounding, 10f * scale);
-        ImGui.PushStyleVar(ImGuiStyleVar.WindowBorderSize, 1.5f * scale);
-        ImGui.PushStyleColor(ImGuiCol.Border, new Vector4(Theme.Accent.X, Theme.Accent.Y, Theme.Accent.Z, 0.7f));
+        ImGui.PushStyleVar(ImGuiStyleVar.WindowRounding, Rad.Panel);
+        ImGui.PushStyleVar(ImGuiStyleVar.WindowBorderSize, Stroke.Focus);
+        ImGui.PushStyleColor(ImGuiCol.Border, Theme.Accent with { W = 0.7f });
 
         var open = ImGui.BeginPopupModal(
             RulesPopupId, ImGuiWindowFlags.AlwaysAutoResize | ImGuiWindowFlags.NoTitleBar | ImGuiWindowFlags.NoMove);
@@ -987,23 +1402,23 @@ public sealed class SubmitPane : IDisposable
 
         ImGui.Dummy(new Vector2(content, 0f));
 
-        using (plugin.Fonts.Header.PushSafe())
+        using (Text.PushTitle())
             ImGui.TextUnformatted("Before You Publish");
 
-        ImGui.Dummy(new Vector2(0f, 14f * scale));
+        ImGui.Dummy(new Vector2(0f, Sp.Lg));
         Divider(content);
-        ImGui.Dummy(new Vector2(0f, 14f * scale));
+        ImGui.Dummy(new Vector2(0f, Sp.Lg));
 
         Rule(content, Theme.Accent, "No modded clothing or bodies.", "Modded hair and eyes are fine.");
         Rule(content, Theme.Accent, "Nothing NSFW.", "Reported means removed.");
         Rule(
-            content, Theme.Warning,
+            content, Col.Caution,
             $"{State.Settings.BanThreshold} takedowns and you are done.",
             "Your published glamours stay. You cannot add more.");
 
-        ImGui.Dummy(new Vector2(0f, 4f * scale));
+        ImGui.Dummy(new Vector2(0f, Sp.Xs));
         Divider(content);
-        ImGui.Dummy(new Vector2(0f, 14f * scale));
+        ImGui.Dummy(new Vector2(0f, Sp.Lg));
 
         DrawRuleButtons(content);
         ImGui.EndPopup();
@@ -1012,26 +1427,23 @@ public sealed class SubmitPane : IDisposable
     /// The two answers, sitting at the bottom right the way a dialog's do.
     private void DrawRuleButtons(float content)
     {
-        var scale = UiHelpers.Scale;
-        var height = 30f * scale;
-        var gap = 8f * scale;
-
-        var publishWidth = EchoButton.ContentSize("Publish it", plugin.Fonts.Icon, FontAwesomeIcon.Check).X;
-        var cancelWidth = EchoButton.ContentSize("Not yet").X;
+        var publishWidth = EchoButton.ContentSize("Publish It", plugin.Fonts.Icon, FontAwesomeIcon.Check).X;
+        var cancelWidth = EchoButton.ContentSize("Not Yet").X;
 
         var left = ImGui.GetCursorPosX();
-        ImGui.SetCursorPosX(left + MathF.Max(0f, content - publishWidth - cancelWidth - gap));
+        ImGui.SetCursorPosX(left + MathF.Max(0f, content - publishWidth - cancelWidth - Sp.Md));
 
         if (EchoButton.Draw(
-                "##rulesno", "Not yet", new Vector2(0f, height),
+                "##rulesno", "Not Yet", new Vector2(cancelWidth, Metrics.Field),
                 tooltip: "Back to the form. Nothing is sent."))
             ImGui.CloseCurrentPopup();
 
-        ImGui.SameLine(0f, gap);
+        ImGui.SameLine(0f, Sp.Md);
 
         if (EchoButton.Draw(
-                "##rulesyes", "Publish it", new Vector2(0f, height),
-                iconFont: plugin.Fonts.Icon, icon: FontAwesomeIcon.Check))
+                "##rulesyes", "Publish It", new Vector2(publishWidth, Metrics.Field),
+                iconFont: plugin.Fonts.Icon, icon: FontAwesomeIcon.Check,
+                primary: true))
         {
             ImGui.CloseCurrentPopup();
             Publish();
@@ -1041,47 +1453,46 @@ public sealed class SubmitPane : IDisposable
     /// A hairline that fades out at both ends, matching the rule under a section header.
     private static void Divider(float width)
     {
-        var scale = UiHelpers.Scale;
         var origin = ImGui.GetCursorScreenPos();
         var drawList = ImGui.GetWindowDrawList();
 
-        var edge = ImGui.GetColorU32(new Vector4(Theme.Border.X, Theme.Border.Y, Theme.Border.Z, 0f));
-        var middle = ImGui.GetColorU32(new Vector4(Theme.Border.X, Theme.Border.Y, Theme.Border.Z, 0.9f));
+        var edge = Col.U32(Col.EdgeRest with { W = 0f });
+        var middle = Col.U32(Col.EdgeRest with { W = 0.9f });
 
         drawList.AddRectFilledMultiColor(
-            origin, new Vector2(origin.X + (width / 2f), origin.Y + (1f * scale)), edge, middle, middle, edge);
+            origin, new Vector2(origin.X + (width / 2f), origin.Y + Stroke.Hair), edge, middle, middle, edge);
 
         drawList.AddRectFilledMultiColor(
-            new Vector2(origin.X + (width / 2f), origin.Y), new Vector2(origin.X + width, origin.Y + (1f * scale)),
+            new Vector2(origin.X + (width / 2f), origin.Y), new Vector2(origin.X + width, origin.Y + Stroke.Hair),
             middle, edge, edge, middle);
 
-        ImGui.Dummy(new Vector2(width, 1f * scale));
+        ImGui.Dummy(new Vector2(width, Stroke.Hair));
     }
 
     /// One rule: a mark, the line that matters, and the qualification under it.
     private static void Rule(float content, Vector4 colour, string rule, string detail)
     {
-        var scale = UiHelpers.Scale;
-        var indent = 20f * scale;
+        var indent = Sp.Xl + Sp.Xs;
 
         var drawList = ImGui.GetWindowDrawList();
         var origin = ImGui.GetCursorScreenPos();
         var left = ImGui.GetCursorPosX();
 
         drawList.AddCircleFilled(
-            new Vector2(origin.X + (4f * scale), origin.Y + (ImGui.GetTextLineHeight() / 2f)),
-            3.5f * scale, ImGui.GetColorU32(colour));
+            new Vector2(origin.X + Sp.Xs, origin.Y + (ImGui.GetTextLineHeight() / 2f)),
+            3.5f * UiHelpers.Scale, Col.U32(colour));
 
         ImGui.SetCursorPosX(left + indent);
         ImGui.PushTextWrapPos(left + content);
-        ImGui.TextColored(Theme.Text, rule);
+        ImGui.TextColored(Col.Text, rule);
 
         ImGui.SetCursorPosX(left + indent);
-        ImGui.TextColored(Theme.TextDim, detail);
+        ImGui.TextColored(Col.TextDim, detail);
         ImGui.PopTextWrapPos();
 
-        ImGui.Dummy(new Vector2(0f, 12f * scale));
+        ImGui.Dummy(new Vector2(0f, Sp.Lg));
     }
+
 
     /// What is sent.
     private GlamourSubmission Compose()
@@ -1141,7 +1552,8 @@ public sealed class SubmitPane : IDisposable
                 }
 
                 done = editingId is null ? "Published. It's on the board now." : "Saved.";
-                Published?.Invoke(result.Id);
+
+                finished = result.Id;
 
                 State.RefreshProfile(force: true);
             }
@@ -1171,7 +1583,10 @@ public sealed class SubmitPane : IDisposable
                 if (await GalleryClient.DeleteAsync(id, State.OwnerKey, CancellationToken.None).ConfigureAwait(false))
                 {
                     done = "Removed from the gallery.";
-                    Removed?.Invoke(id);
+
+                    removed = true;
+                    finished = id;
+
                     State.RefreshProfile(force: true);
                 }
                 else

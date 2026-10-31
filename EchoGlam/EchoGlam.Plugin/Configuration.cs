@@ -9,13 +9,16 @@ public sealed class Configuration : IPluginConfiguration
     public int Version { get; set; } = 1;
 
     /// Bumped when a stored value needs correcting rather than merely defaulting.
-    public const int CurrentVersion = 1;
+    public const int CurrentVersion = 2;
 
     /// Brings a saved configuration up to date.
     public void Migrate()
     {
         if (Version >= CurrentVersion)
             return;
+
+        WindowWidth = Math.Max(WindowWidth, MinimumWindowWidth);
+        WindowHeight = Math.Max(WindowHeight, MinimumWindowHeight);
 
         Version = CurrentVersion;
         Save();
@@ -29,19 +32,28 @@ public sealed class Configuration : IPluginConfiguration
     /// Which tab was open when the session ended.
     public int LastTab { get; set; }
 
-    /// Window size, remembered across sessions.
+    /// Kept only so an old configuration file still loads.
     public float WindowWidth { get; set; } = DefaultWindowWidth;
     public float WindowHeight { get; set; } = DefaultWindowHeight;
 
-    /// Three gallery cards across, plus the window's own padding and scrollbar.
-    public const float DefaultWindowWidth = 900f;
+    /// Four gallery cards across, plus the rail, the gutters and the scrollbar.
+    public const float DefaultWindowWidth = 1180f;
 
-    /// Two rows of cards and the header above them, which is enough to show that the grid continues below
-    /// without dominating the screen.
-    public const float DefaultWindowHeight = 700f;
+    /// Two full rows of cards plus the start of a third, which is what tells somebody the grid continues
+    /// without the window dominating the screen.
+    public const float DefaultWindowHeight = 800f;
+
+    /// The narrowest the window may be dragged.
+    public const float MinimumWindowWidth = 820f;
+
+    /// 620 rather than 560, and the twenty is load-bearing.
+    public const float MinimumWindowHeight = 620f;
 
     /// Pins the window in place, so working in it can't nudge it around.
     public bool WindowLocked { get; set; }
+
+    /// Whether the Dressing Room's figure column is collapsed to its icon rail.
+    public bool DressingRoomCompact { get; set; }
 
     /// Whether the window was collapsed to its box when the session ended.
     public bool StartMinimised { get; set; }

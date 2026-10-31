@@ -34,47 +34,47 @@ public static class ImageProcessor
     private static readonly long[] QualityLadder = [84L, 76L, 68L, 60L];
 
     /// Crops and encodes, at a chosen position and zoom within the cover-scaled source.
+    internal const float CoverMargin = 1.003f;
+
+    /// degrees turns the picture clockwise, any angle.
     public static byte[] ToJpeg(
-        string sourcePath, int targetWidth, int targetHeight, float panX = 0.5f, float panY = 0.5f, float zoom = 1f)
+        string sourcePath, int targetWidth, int targetHeight, float panX = 0.5f, float panY = 0.5f,
+        float zoom = 1f, float degrees = 0f)
     {
         using var original = new Bitmap(sourcePath);
-        return Encode(original, targetWidth, targetHeight, panX, panY, zoom);
+        return Encode(original, targetWidth, targetHeight, panX, panY, zoom, degrees);
     }
 
     public static byte[] ToJpeg(
-        byte[] source, int targetWidth, int targetHeight, float panX = 0.5f, float panY = 0.5f, float zoom = 1f)
+        byte[] source, int targetWidth, int targetHeight, float panX = 0.5f, float panY = 0.5f,
+        float zoom = 1f, float degrees = 0f)
     {
         using var stream = new MemoryStream(source);
         using var original = new Bitmap(stream);
-        return Encode(original, targetWidth, targetHeight, panX, panY, zoom);
+        return Encode(original, targetWidth, targetHeight, panX, panY, zoom, degrees);
     }
 
+    /// Crops, rotates and encodes, in one resampling pass.
     private static byte[] Encode(
-        Bitmap original, int targetWidth, int targetHeight, float panX, float panY, float zoom)
+        Bitmap original, int targetWidth, int targetHeight, float panX, float panY, float zoom, float degrees)
     {
-        var targetAspect = targetWidth / (float)targetHeight;
-        var sourceAspect = original.Width / (float)original.Height;
+        var radians = degrees * MathF.PI / 180f;
+        var cos = MathF.Abs(MathF.Cos(radians));
+        var sin = MathF.Abs(MathF.Sin(radians));
 
-        int cropWidth, cropHeight;
+        var footprintWidth = (targetWidth * cos) + (targetHeight * sin);
+        var footprintHeight = (targetWidth * sin) + (targetHeight * cos);
 
-        if (sourceAspect > targetAspect)
-        {
-            cropHeight = original.Height;
-            cropWidth = (int)(cropHeight * targetAspect);
-        }
-        else
-        {
-            cropWidth = original.Width;
-            cropHeight = (int)(cropWidth / targetAspect);
-        }
+        var cover = MathF.Max(footprintWidth / original.Width, footprintHeight / original.Height)
+                    * CoverMargin;
 
-        var effectiveZoom = MathF.Max(1f, zoom);
-        cropWidth = Math.Max(1, (int)(cropWidth / effectiveZoom));
-        cropHeight = Math.Max(1, (int)(cropHeight / effectiveZoom));
+        var effective = cover * MathF.Max(1f, zoom);
 
-        var cropX = (int)(Math.Clamp(panX, 0f, 1f) * (original.Width - cropWidth));
-        var cropY = (int)(Math.Clamp(panY, 0f, 1f) * (original.Height - cropHeight));
-        var cropRect = new Rectangle(cropX, cropY, cropWidth, cropHeight);
+        var scaledWidth = original.Width * effective;
+        var scaledHeight = original.Height * effective;
+
+        var offsetX = (Math.Clamp(panX, 0f, 1f) - 0.5f) * MathF.Max(0f, scaledWidth - footprintWidth);
+        var offsetY = (Math.Clamp(panY, 0f, 1f) - 0.5f) * MathF.Max(0f, scaledHeight - footprintHeight);
 
         using var resized = new Bitmap(targetWidth, targetHeight);
 
@@ -82,8 +82,17 @@ public static class ImageProcessor
         {
             graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
             graphics.SmoothingMode = SmoothingMode.HighQuality;
+            graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+
+            graphics.Clear(Color.Black);
+
+            graphics.TranslateTransform(targetWidth / 2f, targetHeight / 2f);
+            graphics.RotateTransform(degrees);
+            graphics.TranslateTransform(-offsetX, -offsetY);
+
             graphics.DrawImage(
-                original, new Rectangle(0, 0, targetWidth, targetHeight), cropRect, GraphicsUnit.Pixel);
+                original,
+                new RectangleF(-scaledWidth / 2f, -scaledHeight / 2f, scaledWidth, scaledHeight));
         }
 
         var encoder = ImageCodecInfo.GetImageEncoders().First(c => c.FormatID == ImageFormat.Jpeg.Guid);

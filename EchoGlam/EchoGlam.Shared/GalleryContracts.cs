@@ -26,6 +26,9 @@ public class GlamourSummary
     public int Votes { get; set; }
     public int Favourites { get; set; }
 
+    /// Votes cast for this entry since the first of the current UTC month.
+    public int MonthVotes { get; set; }
+
     /// The job the look was built around, or 0 for none.
     public uint JobId { get; set; }
 
@@ -89,9 +92,16 @@ public static class GlamourSort
     public const string Newest = "newest";
     public const string Favourites = "favourites";
 
+    /// This month's most-liked, for the showcase.
+    public const string Month = "month";
+
     public static readonly string[] All = [Trending, Top, Newest, Favourites];
 
+    /// Valid as a SORT the player can choose.
     public static bool IsValid(string? sort) => sort is not null && Array.IndexOf(All, sort) >= 0;
+
+    /// Valid as something the relay will order by, which is All plus the showcase.
+    public static bool IsQueryable(string? sort) => IsValid(sort) || sort == Month;
 }
 
 /// What the plugin posts to publish or update a glamour.

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Numerics;
 using Dalamud.Bindings.ImGui;
+using EchoGlam.UI.Foundation;
 
 namespace EchoGlam.UI.Controls;
 
@@ -14,16 +15,24 @@ public static class EchoToggle
     private const float GapDesign = 10f;
 
     /// How fast the knob travels.
-    private const float SlideSpeed = 18f;
+    private const float SlideSpeed = Anim.SlideSpeed;
 
     /// Knob position per control, keyed by id.
     private static readonly Dictionary<string, float> Slide = [];
 
-    private static readonly Vector4 Off = new(0.24f, 0.24f, 0.29f, 1f);
-    private static readonly Vector4 Knob = new(0.96f, 0.96f, 0.98f, 1f);
+    /// The unlit track.
+    private static Vector4 Off => Col.Track;
+
+    /// The knob, brighter than body text so it reads as a lit object on a dark track.
+    private static Vector4 Knob => Col.Knob;
 
     /// How tall a switch draws, so a caller lining it up against something else can ask rather than assume.
     public static float Height => MathF.Max(HeightDesign * UiHelpers.Scale, ImGui.GetTextLineHeight());
+
+    /// How wide the switch and its label come out, so a row laid out from its right-hand end can reserve the
+    /// space rather than guess it.
+    public static float Width(string label) =>
+        ((WidthDesign + GapDesign) * UiHelpers.Scale) + ImGui.CalcTextSize(label).X;
 
     /// Draws the switch and its label.
     public static bool Draw(string id, string label, ref bool value, string? tooltip = null)

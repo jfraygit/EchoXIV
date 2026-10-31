@@ -40,6 +40,37 @@ public static class UiHelpers
         drawList.AddText(font, drawFontSize, center - (scaledSize / 2f), color, glyph, 0f);
     }
 
+    /// Draws an icon at whatever size makes its INK fill a box, rather than at a font size.
+    public static void DrawFittedIcon(
+        ImDrawListPtr drawList, FontAwesomeIcon icon, Vector2 center, float box, uint color)
+    {
+        var glyph = icon.ToIconString();
+        var font = ImGui.GetFont();
+        var info = ImGui.FindGlyph(font, glyph[0]);
+
+        if (info.IsNull || font.FontSize <= 0f)
+        {
+            DrawScaledIcon(drawList, icon, center, color);
+            return;
+        }
+
+        var largest = MathF.Max(info.X1 - info.X0, info.Y1 - info.Y0);
+
+        if (largest <= 0f)
+        {
+            DrawScaledIcon(drawList, icon, center, color);
+            return;
+        }
+
+        var size = font.FontSize * (box / largest);
+        var scale = size / font.FontSize;
+
+        var inkMin = new Vector2(info.X0, info.Y0) * scale;
+        var inkMax = new Vector2(info.X1, info.Y1) * scale;
+
+        drawList.AddText(font, size, center - ((inkMin + inkMax) / 2f), color, glyph, 0f);
+    }
+
     /// The size Dalamud's default font is at 100%.
     private const float BaseFontSize = 17f;
 
@@ -288,18 +319,20 @@ public static class UiHelpers
         var voteWidth = ImGui.CalcTextSize(voteText).X;
         var favouriteWidth = ImGui.CalcTextSize(favouriteText).X;
 
-        var markWidth = lineHeight * 0.9f;
-        var markGap = 4f * Scale;
-        var pairGap = 10f * Scale;
+        var markWidth = lineHeight * 0.78f;
+
+        var markGap = 6f * Scale;
+
+        var pairGap = 12f * Scale;
 
         var used = markWidth + markGap + voteWidth + pairGap + markWidth + markGap + favouriteWidth;
         var x = origin.X + width - used;
 
         using (iconFont.PushSafe())
         {
-            DrawScaledIcon(
+            DrawFittedIcon(
                 drawList, Dalamud.Interface.FontAwesomeIcon.Heart,
-                new Vector2(x + (markWidth / 2f), centre),
+                new Vector2(x + (markWidth / 2f), centre), markWidth,
                 ImGui.GetColorU32(voted ? Theme.Vote : Theme.TextDisabled));
         }
 
@@ -309,9 +342,9 @@ public static class UiHelpers
 
         using (iconFont.PushSafe())
         {
-            DrawScaledIcon(
+            DrawFittedIcon(
                 drawList, Dalamud.Interface.FontAwesomeIcon.Star,
-                new Vector2(favouriteX + (markWidth / 2f), centre),
+                new Vector2(favouriteX + (markWidth / 2f), centre), markWidth,
                 ImGui.GetColorU32(favourited ? Theme.Favourite : Theme.TextDisabled));
         }
 
@@ -323,12 +356,36 @@ public static class UiHelpers
     }
 
     /// A tooltip that wraps instead of running off the screen edge.
-    public static void WrappedTooltip(string text)
+    public static void WrappedTooltip(string text, string? footnote = null)
     {
         ImGui.BeginTooltip();
         ImGui.PushTextWrapPos(ImGui.GetFontSize() * 20f);
         ImGui.TextUnformatted(text);
         ImGui.PopTextWrapPos();
+
+        if (!string.IsNullOrEmpty(footnote))
+        {
+            var rule = ImGui.GetItemRectSize().X;
+
+            ImGui.Dummy(new Vector2(0f, Foundation.Sp.Xs));
+
+            var min = ImGui.GetCursorScreenPos();
+
+            ImGui.GetWindowDrawList().AddRectFilled(
+                min,
+                new Vector2(min.X + rule, min.Y + Foundation.Stroke.Hair),
+                Foundation.Col.U32(Foundation.Col.EdgeRest with { W = 0.5f }));
+
+            ImGui.Dummy(new Vector2(rule, Foundation.Sp.Xs + Foundation.Stroke.Hair));
+
+            using (Foundation.Text.PushCaption())
+            {
+                ImGui.PushStyleColor(ImGuiCol.Text, Theme.TextDisabled);
+                ImGui.TextUnformatted(footnote);
+                ImGui.PopStyleColor();
+            }
+        }
+
         ImGui.EndTooltip();
     }
 

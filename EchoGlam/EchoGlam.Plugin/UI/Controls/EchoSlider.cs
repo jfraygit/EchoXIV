@@ -22,6 +22,9 @@ public static class EchoSlider
 
     private static readonly Dictionary<string, DragState> Drags = [];
 
+    /// Ids whose current press was a double-click reset, held until the button comes up.
+    private static readonly HashSet<string> Reset = [];
+
     /// Draws a slider spanning the available width.
     public static bool Draw(
         string id,
@@ -66,7 +69,15 @@ public static class EchoSlider
             Drags[id] = new DragState(travelMin, travel, onGrab ? pressX - grabAt : 0f);
         }
 
-        if (active)
+        if (resetTo is { } reset && hovered && ImGui.IsMouseDoubleClicked(ImGuiMouseButton.Left))
+        {
+            value = reset;
+            changed = true;
+            Reset.Add(id);
+            Drags.Remove(id);
+        }
+
+        if (active && !Reset.Contains(id))
         {
             var drag = Drags.TryGetValue(id, out var stored)
                 ? stored
@@ -81,12 +92,9 @@ public static class EchoSlider
         }
 
         if (ImGui.IsItemDeactivated())
-            Drags.Remove(id);
-
-        if (resetTo is { } reset && ImGui.IsItemHovered() && ImGui.IsMouseDoubleClicked(ImGuiMouseButton.Left))
         {
-            value = reset;
-            changed = true;
+            Drags.Remove(id);
+            Reset.Remove(id);
         }
 
         value = Math.Clamp(value, min, max);

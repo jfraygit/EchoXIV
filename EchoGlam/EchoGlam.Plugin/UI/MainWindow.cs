@@ -7,10 +7,13 @@ using Dalamud.Interface.Utility;
 using Dalamud.Interface.Windowing;
 using EchoGlam.Game;
 using EchoGlam.UI.Controls;
+using EchoGlam.UI.Design;
+using EchoGlam.UI.Foundation;
+using EchoGlam.UI.Shell;
 
 namespace EchoGlam.UI;
 
-/// EchoGlam's window: a wardrobe on one tab and a catalogue on the next.
+/// EchoGlam's window: a wardrobe behind one icon and a catalogue behind the next.
 public sealed class MainWindow : Window
 {
     /// Tab order, and the index stored in Configuration.LastTab.
@@ -24,28 +27,73 @@ public sealed class MainWindow : Window
 
     private static readonly string[] TabLabels = ["Dressing Room", "Gallery", "Profile", "Friends"];
 
-    /// The settings panel's own strip.
-    private static readonly string[] SettingsTabLabels = ["General", "Changelog"];
+    /// The index, in Tab order.
+    private static readonly Destination[] Destinations =
+    [
+        new("Dressing Room"),
+        new("Gallery"),
+        new("Profile"),
+        new("Friends"),
+    ];
 
-    private const int ChangelogTab = 1;
+
+    /// The settings panel's own strip.
+    private const string AppearanceCategory = "Appearance";
+
+    private const string ChangelogCategory = "Changelog";
+
+    private const string AboutCategory = "About";
+
+    private const string DevelopmentCategory = "Development";
+
+    /// Built per draw rather than held as a static, because the last entry is only there in a development
+    /// build and a static array would need a second one for the other case.
+    private static CategoryList.Item[] SettingsCategories() =>
+        Build.Diagnostics
+            ?
+            [
+                new(AppearanceCategory, "Appearance", FontAwesomeIcon.Palette, "Theme, colours and the window"),
+                new(ChangelogCategory, "Changelog", FontAwesomeIcon.History, "What's new"),
+                new(AboutCategory, "About", FontAwesomeIcon.InfoCircle, "Version and links"),
+                new(DevelopmentCategory, "Development", FontAwesomeIcon.Flask, "Probes and diagnostics"),
+            ]
+            :
+            [
+                new(AppearanceCategory, "Appearance", FontAwesomeIcon.Palette, "Theme, colours and the window"),
+                new(ChangelogCategory, "Changelog", FontAwesomeIcon.History, "What's new"),
+                new(AboutCategory, "About", FontAwesomeIcon.InfoCircle, "Version and links"),
+            ];
 
     private readonly Plugin plugin;
-    private readonly EchoTabs tabs = new();
 
-    /// Its own instance, not the header's.
-    private readonly EchoTabs settingsTabs = new();
+    /// The masthead: wordmark, numbered index, lock.
+    private readonly Masthead masthead = new();
+
+    private readonly CategoryList settingsCategories = new();
+
+    private string settingsCategory = AppearanceCategory;
+
+    /// The three things that can occupy the content region.
+    private const string PagePane = "page";
+
+    private const string SettingsPane = "settings";
+
+    private const string SubmitPaneKey = "submit";
+
+    private readonly Crossfade pane = new(PagePane);
     private readonly DressingRoomTab dressingRoom;
     private readonly GalleryTab gallery;
     private readonly ProfileTab profile;
+
+    /// Somebody else's profile, drawn in the Gallery's place.
+    private readonly ProfileTab guest;
+
     private readonly FriendsTab friends;
     private readonly SubmitPane submit;
-    private int themeColors;
+    private Theme.ThemePush themeColors;
 
     /// Whether the settings panel is showing over the top of the tab content.
     private bool showSettings;
-
-    /// Below this the gallery grid drops under two columns and the settings rows start wrapping every line.
-    private static readonly Vector2 MinimumSize = new(460f, 380f);
 
     public MainWindow(Plugin plugin)
         : base("EchoGlam###EchoGlamMain", ImGuiWindowFlags.NoTitleBar | ImGuiWindowFlags.NoScrollbar)
@@ -54,13 +102,22 @@ public sealed class MainWindow : Window
         dressingRoom = new DressingRoomTab(plugin);
         gallery = new GalleryTab(plugin);
         profile = new ProfileTab(plugin, gallery.Images);
+        guest = new ProfileTab(plugin, gallery.Images);
         friends = new FriendsTab(plugin);
         submit = new SubmitPane(plugin, plugin.Screenshots, gallery.Images);
 
-        gallery.OpenProfile += id =>
+        gallery.OpenProfile += id => guest.View(id, guest.Stop);
+
+        friends.OpenProfile += id =>
         {
-            profile.View(id, () => tabs.SetImmediate((int)Tab.Gallery));
-            tabs.SetImmediate((int)Tab.Profile);
+            guest.View(id, guest.Stop);
+            masthead.SetImmediate((int)Tab.Gallery);
+        };
+
+        guest.WasMine += () =>
+        {
+            guest.Stop();
+            masthead.SetImmediate((int)Tab.Profile);
         };
 
         gallery.Publish += () => submit.OpenForCurrentLook();
@@ -68,21 +125,21 @@ public sealed class MainWindow : Window
 
         profile.OpenGlamour += id =>
         {
-            gallery.Show(id, () => tabs.SetImmediate((int)Tab.Profile));
-            tabs.SetImmediate((int)Tab.Gallery);
+            gallery.Show(id, () => masthead.SetImmediate((int)Tab.Profile));
+            masthead.SetImmediate((int)Tab.Gallery);
         };
 
-        submit.Published += _ =>
+        guest.OpenGlamour += id =>
         {
-            submit.Close();
-            gallery.Reload();
+            if (guest.ViewingId is not { } author)
+                return;
+
+            gallery.Show(id, () => guest.View(author, guest.Stop));
+            guest.Stop();
         };
 
-        submit.Removed += _ =>
-        {
-            submit.Close();
-            gallery.Reload();
-        };
+        submit.Published += _ => gallery.Reload();
+        submit.Removed += _ => gallery.Reload();
 
         minimised = Config.StartMinimised;
 
@@ -90,15 +147,10 @@ public sealed class MainWindow : Window
 
         animatedSize = TargetSize;
 
-        tabs.SetImmediate(Math.Clamp(Config.LastTab, 0, TabLabels.Length - 1));
+        masthead.SetImmediate(Math.Clamp(Config.LastTab, 0, TabLabels.Length - 1));
     }
 
     private Configuration Config => plugin.Configuration;
-
-    /// Side length of the square chrome buttons in the header row.
-    private const float ChromeButtonDesign = 24f;
-
-    private const string Wordmark = "ECHOGLAM";
 
     /// Side length of the collapsed box, in design units.
     private const float MinimisedSize = 54f;
@@ -107,7 +159,7 @@ public sealed class MainWindow : Window
     private const FontAwesomeIcon MinimisedIcon = FontAwesomeIcon.Tshirt;
 
     /// How fast the box grows and shrinks.
-    private const float ResizeLerpSpeed = 16f;
+    private const float ResizeLerpSpeed = Anim.ResizeSpeed;
 
     /// The first-run introduction, and whether it is currently running.
     private readonly IntroSequence intro = new();
@@ -130,27 +182,67 @@ public sealed class MainWindow : Window
 
     private Vector2? minimisedPressAt;
 
-    /// Assert the stored size for exactly one frame after the window opens.
-    private bool assertSizeOnce = true;
-
-    public override void OnOpen() => assertSizeOnce = true;
+    public override void OnOpen() => animatedSize = TargetSize;
 
     /// Releases what the tabs hold.
     public void Dispose()
     {
         gallery.Dispose();
         submit.Dispose();
+
+        profile.Dispose();
+        guest.Dispose();
     }
+
+    /// The window's one size, in design units.
+    public static readonly Vector2 DesignSize = new(1240f, 780f);
+
+    /// DesignSize, less the figure column, while the Dressing Room is collapsed.
+    private Vector2 DesignForPage =>
+        pane.Showing != PagePane
+            ? DesignSize
+            : DesignSize with { X = DesignSize.X - FoldedAway };
+
+    /// How much width the page on screen has folded away, in design units.
+    private float FoldedAway => (Tab)Config.LastTab switch
+    {
+        Tab.DressingRoom when Config.DressingRoomCompact => DressingRoomTab.CollapseSaving,
+        Tab.Gallery when gallery.PictureFolded => GalleryTab.CollapseSaving,
+        _ => 0f,
+    };
 
     /// The size the window is easing toward, in design units.
     private Vector2 TargetSize => introRunning
         ? IntroSize
         : minimised
             ? new Vector2(MinimisedSize, MinimisedSize)
-            : new Vector2(Config.WindowWidth, Config.WindowHeight);
+            : FittedSize;
 
-    /// Whether the resize has finished and the window is at its full size.
-    private bool FullyExpanded => !minimised && !introRunning && animatedSize.X >= TargetSize.X * 0.92f;
+    /// DesignSize, shrunk if it would not fit on the monitor.
+    private Vector2 FittedSize
+    {
+        get
+        {
+            var design = DesignForPage;
+            var scale = ImGuiHelpers.GlobalScale;
+
+            if (scale <= 0f)
+                return design;
+
+            var work = ImGui.GetMainViewport().WorkSize / scale;
+
+            var room = work - new Vector2(24f, 24f);
+
+            return new Vector2(
+                MathF.Min(design.X, MathF.Max(room.X, 640f)),
+                MathF.Min(design.Y, MathF.Max(room.Y, 480f)));
+        }
+    }
+
+    /// Whether the full layout is up, rather than the collapsed box or the intro card.
+    private bool FullyExpanded => !minimised && !introRunning && contentUp;
+
+    private bool contentUp;
 
     /// True once the window is expanded and nothing is moving - the only state in which the user is in charge
     /// of the size and the position.
@@ -175,24 +267,16 @@ public sealed class MainWindow : Window
         if (Vector2.Distance(animatedSize, target) < 1f)
             animatedSize = target;
 
+        if (minimised || introRunning)
+            contentUp = false;
+        else if (animatedSize.X >= target.X * 0.92f)
+            contentUp = true;
+
         ApplyConstraints();
 
-        if (assertSizeOnce)
-        {
-            Size = animatedSize;
-            SizeCondition = ImGuiCond.Always;
-            assertSizeOnce = false;
-        }
-        else if (Settled)
-        {
-            Size = null;
-        }
-        else
-        {
-            Size = animatedSize;
-            SizeCondition = ImGuiCond.Always;
-            Flags |= ImGuiWindowFlags.NoResize;
-        }
+        Size = animatedSize;
+        SizeCondition = ImGuiCond.Always;
+        Flags |= ImGuiWindowFlags.NoResize;
 
         if (!FullyExpanded)
             Flags |= ImGuiWindowFlags.NoBackground;
@@ -235,7 +319,12 @@ public sealed class MainWindow : Window
         }
 
         RememberPosition();
-        RememberSize();
+
+        Modal.Frame(ImGui.GetWindowPos(), ImGui.GetWindowSize());
+
+
+
+        gallery.Images.Tick();
 
         if (!FullyExpanded)
         {
@@ -243,9 +332,14 @@ public sealed class MainWindow : Window
             return;
         }
 
-        DrawWindowBorder();
+        DrawWindowFrame();
 
-        var selected = (Tab)DrawHeader();
+        var region = ImGui.GetContentRegionAvail();
+        var origin = ImGui.GetCursorScreenPos();
+
+        var windowTop = ImGui.GetWindowPos().Y;
+
+        var selected = (Tab)masthead.Draw(origin, region.Y, Destinations);
 
         if ((int)selected != Config.LastTab)
         {
@@ -253,18 +347,74 @@ public sealed class MainWindow : Window
             Config.Save();
         }
 
-        if (tabs.ClickedThisFrame)
+        if (masthead.ClickedThisFrame)
             showSettings = false;
 
-        ImGui.PushStyleVar(ImGuiStyleVar.Alpha, ImGui.GetStyle().Alpha * tabs.ContentAlpha);
+        var contentLeft = origin.X + Masthead.Width + Sp.Xxl;
+        var contentWidth = MathF.Max(0f, region.X - Masthead.Width - Sp.Xxl);
 
-        if (ImGui.BeginChild("##echoglamcontent", ImGui.GetContentRegionAvail(), false))
+        ImGui.SetCursorScreenPos(new Vector2(contentLeft, origin.Y));
+
+        if (ImGui.BeginChild("##echoglamcontent", new Vector2(contentWidth, region.Y), false))
         {
-            if (showSettings)
+            var inner = ImGui.GetCursorScreenPos();
+            var innerWidth = ImGui.GetContentRegionAvail().X;
+
+            var ruleY = inner.Y + PageHeader.RuleOffset(bare: true);
+
+            var chromeY = MathF.Max(
+                origin.Y + Stroke.Hair,
+                ((windowTop + ruleY) / 2f) - (WindowChrome.Height / 2f));
+
+            switch (WindowChrome.Draw(
+                        new Vector2(inner.X + innerWidth, chromeY),
+                        showSettings,
+                        Config.WindowLocked,
+                        ChangelogUnread))
+            {
+                case ChromeAction.Lock:
+                    Config.WindowLocked = !Config.WindowLocked;
+                    Config.Save();
+                    break;
+
+                case ChromeAction.Settings:
+                    showSettings = !showSettings;
+
+                    if (showSettings && ChangelogUnread)
+                        settingsCategory = ChangelogCategory;
+
+                    break;
+
+                case ChromeAction.Minimise:
+                    SetMinimised(true);
+                    break;
+
+                case ChromeAction.Close:
+                    IsOpen = false;
+                    break;
+            }
+
+            ImGui.SetCursorScreenPos(inner);
+
+            var wanted = showSettings
+                ? SettingsPane
+                : submit.IsOpen
+                    ? SubmitPaneKey
+                    : PagePane;
+
+            var showing = pane.Show(wanted);
+
+            ImGui.PushStyleVar(
+                ImGuiStyleVar.Alpha,
+                ImGui.GetStyle().Alpha * masthead.ContentAlpha * pane.Alpha);
+
+            PageHeader.Draw(string.Empty, ImGui.GetContentRegionAvail().X);
+
+            if (showing == SettingsPane)
             {
                 DrawSettings();
             }
-            else if (submit.IsOpen)
+            else if (showing == SubmitPaneKey)
             {
                 submit.Draw();
             }
@@ -277,7 +427,11 @@ public sealed class MainWindow : Window
                         break;
 
                     case Tab.Gallery:
-                        gallery.Draw();
+                        if (guest.IsViewing)
+                            guest.Draw();
+                        else
+                            gallery.Draw();
+
                         break;
 
                     case Tab.Friends:
@@ -289,11 +443,14 @@ public sealed class MainWindow : Window
                         break;
                 }
             }
+
+            ImGui.PopStyleVar();
         }
 
         ImGui.EndChild();
-        ImGui.PopStyleVar();
     }
+
+    /// Whether the band drawn last frame was the bare one.
 
     /// The collapsed box: a shirt glyph in a rounded, accent-ringed square that can be parked anywhere and
     /// clicked to bring the window back.
@@ -353,36 +510,30 @@ public sealed class MainWindow : Window
     }
 
     /// An accent border around the whole window, matching the collapsed box and the rest of the suite.
-    private static void DrawWindowBorder()
+    private static void DrawWindowFrame()
     {
         var scale = UiHelpers.Scale;
         var inset = 1.5f * scale;
+        var rounding = 8f * scale;
 
         var drawList = ImGui.GetWindowDrawList();
         var min = ImGui.GetWindowPos() + new Vector2(inset, inset);
         var max = ImGui.GetWindowPos() + ImGui.GetWindowSize() - new Vector2(inset, inset);
 
+        Backdrop.Draw(min, max, rounding);
+
         drawList.PushClipRectFullScreen();
-        drawList.AddRect(min, max,
-            ImGui.GetColorU32(new Vector4(Theme.Accent.X, Theme.Accent.Y, Theme.Accent.Z, 0.75f)),
-            8f * scale, ImDrawFlags.None, 2f * scale);
+        drawList.AddRect(
+            min, max,
+            Col.U32(Theme.Accent with { W = 0.34f }),
+            rounding, ImDrawFlags.None, Stroke.Edge);
         drawList.PopClipRect();
     }
 
     /// The minimum size, but only while the window is a window.
     private void ApplyConstraints()
     {
-        if (minimised || !FullyExpanded)
-        {
-            SizeConstraints = null;
-            return;
-        }
-
-        SizeConstraints = new WindowSizeConstraints
-        {
-            MinimumSize = MinimumSize,
-            MaximumSize = new Vector2(float.MaxValue, float.MaxValue),
-        };
+        SizeConstraints = null;
     }
 
     /// Ends the introduction and opens into the plugin.
@@ -469,140 +620,10 @@ public sealed class MainWindow : Window
     }
 
     /// The wordmark, the tab strip and the chrome buttons, and whatever the strip returns.
-    private int DrawHeader()
-    {
-        var scale = UiHelpers.Scale;
-        var chrome = ChromeButtonDesign * scale;
-        var chromeGap = 6f * scale;
-        var gapAfterWordmark = 20f * scale;
 
-        var rowOrigin = ImGui.GetCursorScreenPos();
-        var contentWidth = ImGui.GetContentRegionAvail().X;
-
-        Vector2 wordmarkSize;
-        using (plugin.Fonts.Header.PushSafe())
-            wordmarkSize = UiHelpers.MeasureWordmark(Wordmark);
-
-        var stripHeight = EchoTabs.MeasureHeight();
-        var stripNaturalWidth = EchoTabs.MeasureWidth(TabLabels);
-
-        const int chromeCount = 5;
-        var chromeWidth = (chrome * chromeCount) + (chromeGap * (chromeCount - 1));
-        var chromeX = rowOrigin.X + contentWidth - chromeWidth;
-
-        var inlineStart = rowOrigin.X + wordmarkSize.X + gapAfterWordmark;
-        var inline = inlineStart + stripNaturalWidth <= chromeX - gapAfterWordmark;
-
-        var topRowHeight = MathF.Max(MathF.Max(wordmarkSize.Y, chrome), inline ? stripHeight : 0f);
-
-        using (plugin.Fonts.Header.PushSafe())
-        {
-            UiHelpers.DrawWordmark(
-                Wordmark, new Vector2(rowOrigin.X, rowOrigin.Y + ((topRowHeight - wordmarkSize.Y) / 2f)));
-        }
-
-        DrawChromeButtons(new Vector2(chromeX, rowOrigin.Y + ((topRowHeight - chrome) / 2f)), chrome, chromeGap);
-
-        var stripOrigin = inline
-            ? new Vector2(inlineStart, rowOrigin.Y + ((topRowHeight - stripHeight) / 2f))
-            : new Vector2(rowOrigin.X, rowOrigin.Y + topRowHeight + (4f * scale));
-
-        var stripWidth = inline
-            ? MathF.Max(0f, chromeX - gapAfterWordmark - stripOrigin.X)
-            : contentWidth;
-
-        var selected = tabs.Draw("##echoglamtabs", TabLabels, stripOrigin, stripWidth);
-
-        var headerBottom = MathF.Max(rowOrigin.Y + topRowHeight, stripOrigin.Y + stripHeight);
-        ImGui.SetCursorScreenPos(new Vector2(rowOrigin.X, headerBottom + (10f * scale)));
-
-        return selected;
-    }
-
-    /// Writes the dragged size back to the configuration.
-    private void RememberSize()
-    {
-        if (!Settled)
-            return;
-
-        var live = ImGui.GetWindowSize() / MathF.Max(0.01f, ImGuiHelpers.GlobalScale);
-
-        if (MathF.Abs(live.X - Config.WindowWidth) < 1f && MathF.Abs(live.Y - Config.WindowHeight) < 1f)
-            return;
-
-        Config.WindowWidth = live.X;
-        Config.WindowHeight = live.Y;
-
-        animatedSize = new Vector2(Config.WindowWidth, Config.WindowHeight);
-
-        Config.Save();
-    }
 
     /// Lock, settings, minimise and close, at a screen position the caller has worked out.
-    private void DrawChromeButtons(Vector2 screenPos, float buttonSize, float gap)
-    {
-        var cursor = ImGui.GetCursorScreenPos();
-        var x = screenPos.X;
 
-        ImGui.SetCursorScreenPos(new Vector2(x, screenPos.Y));
-        var locked = Config.WindowLocked;
-        if (EchoButton.BareIcon(
-                "##lock", plugin.Fonts.Icon,
-                locked ? FontAwesomeIcon.Lock : FontAwesomeIcon.LockOpen, buttonSize,
-                locked ? "Window is pinned. Click to let it move again." : "Pin the window in place.",
-                selected: locked))
-        {
-            Config.WindowLocked = !locked;
-            Config.Save();
-        }
-
-        x += buttonSize + gap;
-        ImGui.SetCursorScreenPos(new Vector2(x, screenPos.Y));
-        if (EchoButton.BareIcon("##reportbug", plugin.Fonts.Icon, FontAwesomeIcon.Bug, buttonSize, "Report a bug"))
-        {
-            BugReporter.Reset();
-            ImGui.OpenPopup(BugReportPopup);
-        }
-
-        DrawBugReportPopup();
-
-        x += buttonSize + gap;
-        ImGui.SetCursorScreenPos(new Vector2(x, screenPos.Y));
-        if (EchoButton.BareIcon(
-                "##settings", plugin.Fonts.Icon, FontAwesomeIcon.Cog, buttonSize,
-                showSettings ? "Back" : "Settings", selected: showSettings))
-        {
-            showSettings = !showSettings;
-
-            if (showSettings && ChangelogUnread)
-                settingsTabs.SetImmediate(ChangelogTab);
-        }
-
-        if (ChangelogUnread)
-            DrawUnreadDot(new Vector2(x + buttonSize, screenPos.Y));
-
-        x += buttonSize + gap;
-        ImGui.SetCursorScreenPos(new Vector2(x, screenPos.Y));
-        if (EchoButton.BareIcon("##minimise", plugin.Fonts.Icon, FontAwesomeIcon.Compress, buttonSize, "Minimise"))
-            SetMinimised(true);
-
-        x += buttonSize + gap;
-        ImGui.SetCursorScreenPos(new Vector2(x, screenPos.Y));
-        if (EchoButton.BareIcon("##close", plugin.Fonts.Icon, FontAwesomeIcon.Times, buttonSize, "Close"))
-            IsOpen = false;
-
-        ImGui.SetCursorScreenPos(cursor);
-    }
-
-    /// A small accent pip on the top-right corner of the cog.
-    private static void DrawUnreadDot(Vector2 corner)
-    {
-        var scale = UiHelpers.Scale;
-        var drawList = ImGui.GetWindowDrawList();
-
-        drawList.AddCircleFilled(
-            corner - new Vector2(3f * scale, -3f * scale), 3.5f * scale, ImGui.GetColorU32(Theme.Accent));
-    }
 
     /// A tab that exists in the strip but not yet in the plugin.
     private static void DrawPlaceholder(string title, string what, string status)
@@ -623,68 +644,77 @@ public sealed class MainWindow : Window
     /// The settings panel: a strip of its own, and whichever half it is showing.
     private void DrawSettings()
     {
-        var scale = UiHelpers.Scale;
-
+        var categories = SettingsCategories();
         var origin = ImGui.GetCursorScreenPos();
-        var selected = settingsTabs.Draw(
-            "##echoglamsettingstabs", SettingsTabLabels, origin, ImGui.GetContentRegionAvail().X,
-            ChangelogUnread ? ChangelogTab : -1);
+        var region = ImGui.GetContentRegionAvail();
 
-        ImGui.SetCursorScreenPos(new Vector2(origin.X, origin.Y + EchoTabs.MeasureHeight() + (10f * scale)));
+        settingsCategory = settingsCategories.Draw(
+            origin, categories, settingsCategory, plugin.Fonts.Icon,
+            key => key == ChangelogCategory && ChangelogUnread);
 
-        ImGui.PushStyleVar(ImGuiStyleVar.Alpha, ImGui.GetStyle().Alpha * settingsTabs.ContentAlpha);
+        var rule = origin.X + CategoryList.Width + Sp.Xl;
 
-        if (selected == ChangelogTab)
-            DrawChangelog();
-        else
-            DrawGeneralSettings();
+        ImGui.GetWindowDrawList().AddRectFilled(
+            new Vector2(rule, origin.Y),
+            new Vector2(rule + Stroke.Hair, origin.Y + region.Y),
+            Col.U32(Col.EdgeRest with { W = 0.5f }));
 
-        ImGui.PopStyleVar();
-    }
+        var detailLeft = rule + Stroke.Hair + Sp.Xl;
+        var detailWidth = MathF.Max(0f, origin.X + region.X - detailLeft);
 
-    private void DrawGeneralSettings()
-    {
-        var scale = UiHelpers.Scale;
+        ImGui.SetCursorScreenPos(new Vector2(detailLeft, origin.Y));
 
-        Theme.SectionHeader("Appearance");
-        ImGui.Dummy(new Vector2(0f, 4f * scale));
-
-        ImGui.TextColored(Theme.TextDim, "Accent colour");
-        ImGui.Dummy(new Vector2(0f, 4f * scale));
-
-        var available = ImGui.GetContentRegionAvail().X;
-        var swatch = 26f * scale;
-        var swatchGap = 8f * scale;
-        var x = 0f;
-
-        foreach (var (name, colour) in Theme.Presets)
+        if (ImGui.BeginChild("##settingsdetail", new Vector2(detailWidth, region.Y), false))
         {
-            var width = EchoButton.ContentSize(name).X;
-
-            if (x > 0f && x + width > available)
+            switch (settingsCategory)
             {
-                x = 0f;
-            }
-            else if (x > 0f)
-            {
-                ImGui.SameLine(0f, swatchGap);
-            }
+                case ChangelogCategory:
+                    DrawChangelog();
+                    break;
 
-            var isCurrent = ColoursMatch(Theme.Accent, colour);
-            if (EchoButton.Draw($"##accent{name}", name, new Vector2(0f, swatch), colour, selected: isCurrent))
-            {
-                Theme.ApplyAccent(colour);
-                Config.AccentColour = colour;
-                Config.Save();
-            }
+                case AboutCategory:
+                    DrawAbout();
+                    break;
 
-            x += width + swatchGap;
+                case DevelopmentCategory:
+                    DrawDevelopment();
+                    break;
+
+                default:
+                    DrawAppearanceSettings();
+                    break;
+            }
         }
 
-        ImGui.Dummy(new Vector2(0f, 10f * scale));
+        ImGui.EndChild();
+    }
+
+    private void DrawAppearanceSettings()
+    {
+        var width = ImGui.GetContentRegionAvail().X;
+
+        Theme.SectionHeader("Theme", ruleWidth: width);
+        ImGui.Dummy(new Vector2(0f, Sp.Xs));
+
+        var match = ColourThemes.Match(Theme.Accent);
+
+        ImGui.TextColored(
+            Theme.TextDim,
+            match is { } named
+                ? $"{named.Name} - {named.Group}"
+                : "Custom - picked off the wheel rather than from the list.");
+
+        ImGui.Dummy(new Vector2(0f, Sp.Md));
+
+        DrawThemePicker(width);
+
+        ImGui.Dummy(new Vector2(0f, Sp.Xl));
+        Theme.SectionHeader("Your own colour", ruleWidth: width);
+        ImGui.Dummy(new Vector2(0f, Sp.Xs));
 
         var custom = new Vector3(Theme.Accent.X, Theme.Accent.Y, Theme.Accent.Z);
-        if (ImGui.ColorEdit3("Custom", ref custom, ImGuiColorEditFlags.NoInputs))
+
+        if (ImGui.ColorEdit3("Pick a colour", ref custom, ImGuiColorEditFlags.NoInputs))
         {
             var chosen = new Vector4(custom.X, custom.Y, custom.Z, 1f);
             Theme.ApplyAccent(chosen);
@@ -692,29 +722,157 @@ public sealed class MainWindow : Window
             Config.Save();
         }
 
+        ImGui.Dummy(new Vector2(0f, Sp.Xl));
+        Theme.SectionHeader("Window", ruleWidth: width);
+        ImGui.Dummy(new Vector2(0f, Sp.Xs));
 
-        ImGui.Dummy(new Vector2(0f, 14f * scale));
-        Theme.SectionHeader("Community");
-        ImGui.Dummy(new Vector2(0f, 4f * scale));
+        var startMinimised = Config.StartMinimised;
 
-        ImGui.TextColored(Theme.TextDim, "Ask a question, show off a glamour, or hear about updates.");
-        ImGui.Dummy(new Vector2(0f, 6f * scale));
-
-        DrawClickableLink("Join our Discord", DiscordBlurple, DiscordInvite);
-
-
-        if (Build.Diagnostics)
+        if (EchoToggle.Draw(
+                "##startminimised", "Open minimised", ref startMinimised,
+                "EchoGlam starts as the small box rather than the full window. Click the box to "
+                + "bring it back."))
         {
-            ImGui.Dummy(new Vector2(0f, 14f * scale));
-            Theme.SectionHeader("Development");
-            ImGui.Dummy(new Vector2(0f, 4f * scale));
-            ImGui.TextColored(Theme.TextDim, $"EchoGlam {plugin.Version} - development build");
-            ImGui.TextColored(Theme.TextDim, $"UI scale: {UiHelpers.Scale:0.00}x");
-            ImGui.TextColored(Theme.TextDim, $"Window: {Config.WindowWidth:0} x {Config.WindowHeight:0} design units");
+            Config.StartMinimised = startMinimised;
+            Config.Save();
+        }
+
+    }
+
+    /// The theme list, grouped the way EchoMix groups it.
+    private void DrawThemePicker(float width)
+    {
+        var drawList = ImGui.GetWindowDrawList();
+        var swatch = 30f * UiHelpers.Scale;
+        var gap = Sp.Sm;
+        var perRow = Math.Max(1, (int)((width + gap) / (swatch + gap)));
+
+        foreach (var (group, themes) in ColourThemes.Grouped)
+        {
+            using (Text.PushCaption())
+            {
+                var at = ImGui.GetCursorScreenPos();
+
+                Text.Tracked(
+                    drawList, at, group.ToUpperInvariant(), Col.U32(Col.TextMuted), 1.6f, width);
+
+                ImGui.Dummy(new Vector2(width, Text.CaptionSize * 1.6f));
+            }
+
+            for (var i = 0; i < themes.Count; i++)
+            {
+                if (i % perRow != 0)
+                    ImGui.SameLine(0f, gap);
+
+                DrawThemeSwatch(drawList, themes[i], swatch);
+            }
+
+            ImGui.Dummy(new Vector2(0f, Sp.Lg));
         }
     }
 
-    private const string BugReportPopup = "##bugreport";
+    private void DrawThemeSwatch(ImDrawListPtr drawList, ColourThemes.Theme theme, float size)
+    {
+        var min = ImGui.GetCursorScreenPos();
+        var max = min + new Vector2(size, size);
+        var selected = ColoursMatch(Theme.Accent, theme.Accent);
+
+        if (ImGui.InvisibleButton(
+                $"##theme{theme.Name}", new Vector2(size, size), ImGuiButtonFlags.MouseButtonLeft))
+        {
+            Theme.ApplyAccent(theme.Accent);
+            Config.AccentColour = theme.Accent;
+            Config.Save();
+        }
+
+        var hovered = ImGui.IsItemHovered();
+
+        if (hovered)
+            UiHelpers.WrappedTooltip($"{theme.Name}\n{theme.Group}");
+
+        if (selected)
+            Elev.Glow(drawList, min, max, theme.Accent, 0.30f, Rad.Ctl, 7.8f);
+
+        drawList.AddRectFilled(min, max, Col.U32(Col.Sunken), Rad.Ctl);
+
+        var inset = Sp.Xs;
+
+        drawList.AddRectFilled(
+            min + new Vector2(inset, inset), max - new Vector2(inset, inset),
+            Col.U32(theme.Accent), Rad.Chip);
+
+        drawList.AddRect(
+            min, max,
+            Col.U32(selected
+                ? theme.Accent
+                : hovered
+                    ? new Vector4(1f, 1f, 1f, 0.45f)
+                    : Col.EdgeRest with { W = 0.5f }),
+            Rad.Ctl, ImDrawFlags.None, selected ? Stroke.Focus : Stroke.Hair);
+    }
+
+    /// What this is, where to ask about it, and what to do when it breaks.
+    private void DrawAbout()
+    {
+        var width = MathF.Min(ImGui.GetContentRegionAvail().X, Modal.Width(ModalSize.Large));
+
+        Theme.SectionHeader("EchoGlam", ruleWidth: width);
+        ImGui.Dummy(new Vector2(0f, Sp.Md));
+
+        using (Surface.Begin(width, SurfaceKind.Raised))
+        {
+            ImGui.TextColored(Theme.Text, $"Version {plugin.Version}");
+            ImGui.TextColored(Theme.TextDim, "A glamour board and dressing room for Final Fantasy XIV.");
+        }
+
+        ImGui.Dummy(new Vector2(0f, Sp.Xl));
+        Theme.SectionHeader("Community", ruleWidth: width);
+        ImGui.Dummy(new Vector2(0f, Sp.Md));
+
+        using (Surface.Begin(width, SurfaceKind.Raised))
+        {
+            if (EchoButton.Draw(
+                    "##discord", "Join Our Discord", new Vector2(0f, Metrics.RowTall),
+                    DiscordBlurple, plugin.Fonts.Icon, FontAwesomeIcon.Comments))
+                OpenUrl(DiscordInvite);
+
+            ImGui.Dummy(new Vector2(0f, Sp.Sm));
+            ImGui.TextColored(Theme.TextDim, "Questions, help and release announcements.");
+        }
+
+        ImGui.Dummy(new Vector2(0f, Sp.Xl));
+        Theme.SectionHeader("Something Wrong?", ruleWidth: width);
+        ImGui.Dummy(new Vector2(0f, Sp.Md));
+
+        using (var card = Surface.Begin(width, SurfaceKind.Raised))
+            DrawBugReport(card.Box.Inner);
+    }
+
+    /// NEVER REACHABLE IN A RELEASE BUILD, because the category that selects it is not in the list outside a
+    /// development one - see SettingsCategories.
+    private void DrawDevelopment()
+    {
+        var width = ImGui.GetContentRegionAvail().X;
+
+        Theme.SectionHeader("Build", ruleWidth: width);
+        ImGui.Dummy(new Vector2(0f, Sp.Xs));
+
+        ImGui.TextColored(Theme.TextDim, $"EchoGlam {plugin.Version} - development build");
+        ImGui.TextColored(Theme.TextDim, $"UI scale: {UiHelpers.Scale:0.00}x");
+
+        ImGui.Dummy(new Vector2(0f, Sp.Lg));
+
+        if (EchoButton.Draw(
+                "##diagnostics",
+                plugin.Debug?.IsOpen == true ? "Close Diagnostics" : "Open Diagnostics",
+                new Vector2(0f, Metrics.Row),
+                tooltip: "Layout and foundation probes. Dev builds only."))
+        {
+            if (plugin.Debug is { } debug)
+                debug.IsOpen = !debug.IsOpen;
+        }
+    }
+
 
     private string bugReport = string.Empty;
 
@@ -726,19 +884,15 @@ public sealed class MainWindow : Window
     private float bugWrap;
 
     /// The bug report form.
-    private void DrawBugReportPopup()
+    private void DrawBugReport(float width)
     {
-        if (!ImGui.BeginPopup(BugReportPopup))
-            return;
-
         var scale = UiHelpers.Scale;
-        var width = 280f * scale;
 
-        ImGui.TextColored(Theme.Accent, "Report a Bug");
+        ImGui.TextColored(
+            Theme.TextDim,
+            "Sends what you write below with your plugin version, build and UI scale attached -");
 
-        ImGui.PushTextWrapPos(ImGui.GetCursorPosX() + width);
-        ImGui.TextColored(Theme.TextDim, "Goes to the EchoGlam Discord with your version attached.");
-        ImGui.PopTextWrapPos();
+        ImGui.TextColored(Theme.TextDim, "nothing else from this PC. It goes to the EchoGlam Discord.");
 
         ImGui.Spacing();
 
@@ -775,11 +929,9 @@ public sealed class MainWindow : Window
                 break;
 
             case BugReporter.SendState.Failed:
-                ImGui.TextColored(Theme.Warning, $"Failed: {BugReporter.LastError}");
+                ImGui.TextColored(Col.Danger, $"Failed: {BugReporter.LastError}");
                 break;
         }
-
-        ImGui.EndPopup();
     }
 
     /// Gathers the context a report is useless without.
@@ -789,7 +941,7 @@ public sealed class MainWindow : Window
         Name = bugReportName.Trim(),
         Version = plugin.Version,
         Relay = RelayEndpoints.UsingLive ? "live" : "dev",
-        Tab = TabLabels[Math.Clamp(tabs.Selected, 0, TabLabels.Length - 1)],
+        Tab = TabLabels[Math.Clamp(masthead.Selected, 0, TabLabels.Length - 1)],
         Scale = UiHelpers.Scale,
         AppearanceAvailable = Appearance.LayoutTrusted,
         SlotsOverridden = plugin.Wardrobe.Current.Count,
@@ -801,34 +953,16 @@ public sealed class MainWindow : Window
 
     private const string DiscordInvite = "https://discord.gg/nJauXrNWx3";
 
-    /// Coloured text that opens a URL, underlined under the pointer.
-    private static void DrawClickableLink(string label, Vector4 colour, string url)
+    /// Hands a URL to the shell.
+    private static void OpenUrl(string url)
     {
-        var start = ImGui.GetCursorScreenPos();
-        var hovered = ImGui.IsMouseHoveringRect(start, start + ImGui.CalcTextSize(label));
-
-        ImGui.TextColored(colour, label);
-
-        if (!hovered)
-            return;
-
-        ImGui.SetMouseCursor(ImGuiMouseCursor.Hand);
-
-        var min = ImGui.GetItemRectMin();
-        var max = ImGui.GetItemRectMax();
-        ImGui.GetWindowDrawList().AddLine(
-            new Vector2(min.X, max.Y), new Vector2(max.X, max.Y), ImGui.GetColorU32(colour));
-
-        if (!ImGui.IsMouseClicked(ImGuiMouseButton.Left))
-            return;
-
         try
         {
             Process.Start(new ProcessStartInfo { FileName = url, UseShellExecute = true });
         }
         catch (Exception ex)
         {
-            Plugin.Log.Error(ex, "[EchoGlam] Failed to open the Discord invite.");
+            Plugin.Log.Error(ex, "[EchoGlam] Failed to open {0}.", url);
         }
     }
 
@@ -865,16 +999,31 @@ public sealed class MainWindow : Window
             Theme.SectionHeader($"v{entry.Version}", ruleWidth: 0f);
             ImGui.Spacing();
 
-            foreach (var line in entry.Highlights)
+            foreach (var group in entry.Groups)
             {
-                ImGui.Bullet();
-                ImGui.SameLine();
+                using (Text.PushCaption())
+                {
+                    Text.Tracked(
+                        ImGui.GetWindowDrawList(), ImGui.GetCursorScreenPos(),
+                        group.Heading.ToUpperInvariant(), Col.U32(Col.TextMuted), 1.8f,
+                        ImGui.GetContentRegionAvail().X);
 
-                ImGui.PushTextWrapPos(0f);
-                ImGui.TextUnformatted(line);
-                ImGui.PopTextWrapPos();
+                    ImGui.Dummy(new Vector2(0f, Text.CaptionSize * 1.5f));
+                }
 
-                ImGui.Spacing();
+                foreach (var line in group.Lines)
+                {
+                    ImGui.Bullet();
+                    ImGui.SameLine();
+
+                    ImGui.PushTextWrapPos(0f);
+                    ImGui.TextUnformatted(line);
+                    ImGui.PopTextWrapPos();
+
+                    ImGui.Spacing();
+                }
+
+                ImGui.Dummy(new Vector2(0f, Sp.Sm));
             }
 
             if (i < ChangelogData.Entries.Length - 1)

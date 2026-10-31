@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Numerics;
 using System.Threading;
@@ -8,10 +9,11 @@ using Dalamud.Interface;
 using EchoGlam.Game;
 using EchoGlam.Shared;
 using EchoGlam.UI.Controls;
+using EchoGlam.UI.Foundation;
 
 namespace EchoGlam.UI;
 
-/// Somebody's page: who they are, what they have published, and - on your own - what you have saved.
+/// Somebody's page: who they are and what they have made.
 public sealed class ProfileTab : IDisposable
 {
     private readonly Plugin plugin;
@@ -23,25 +25,7 @@ public sealed class ProfileTab : IDisposable
     private ProfileDetail? viewing;
     private string? viewingError;
 
-    /// Set while the display name and bio are being edited, so a half-typed name is not posted on every
-    /// keystroke.
-    private bool editing;
-    private string draftName = string.Empty;
-    private string draftBio = string.Empty;
-
-    /// Set when the bio is loaded from the profile rather than typed, so it is laid out to the box on the
-    /// first frame instead of on the first keystroke.
-    private bool wrapBioOnNextDraw;
-
-    /// The width the bio box was last laid out to, so the wrapper's breaks can be told from the author's own
-    /// when it is saved.
-    private float bioWrapWidth;
-
-    /// The report note box is a fixed width, so this can be derived rather than remembered.
-    private static float ReportNoteWrap =>
-        (260f * UiHelpers.Scale) - (ImGui.GetStyle().FramePadding.X * 2f) - (18f * UiHelpers.Scale);
-    private string draftWorld = string.Empty;
-    private bool saving;
+    /// What went wrong with the last picture upload, said under the picture.
     private string? problem;
 
     private readonly ImageCropDialog cropper = new();
@@ -55,12 +39,32 @@ public sealed class ProfileTab : IDisposable
         this.images = images;
     }
 
-    public void Dispose() => cropper.Draw();
+    /// Releases the crop dialog's decoded source picture.
+    public void Dispose() => cropper.Dispose();
 
     private GalleryState State => plugin.Gallery;
 
     /// Raised when a glamour on a profile is opened, so the Gallery tab can show it.
     public event Action<string>? OpenGlamour;
+
+    /// Raised when the page somebody asked for turns out to be their own.
+    public event Action? WasMine;
+
+    /// Whose page this instance is showing, or null when it is showing your own - or, for the guest instance,
+    /// nothing at all.
+    public string? ViewingId => viewingId;
+
+    /// Whether this instance currently stands in for somebody else's page.
+    public bool IsViewing => viewingId is not null;
+
+    /// Puts a guest view away entirely, rather than falling back to your own page.
+    public void Stop()
+    {
+        viewingId = null;
+        viewing = null;
+        viewingError = null;
+        returnTo = null;
+    }
 
     /// Where Back goes - the glamour this profile was opened from.
     private Action? returnTo;
@@ -71,9 +75,15 @@ public sealed class ProfileTab : IDisposable
         returnTo = back;
         viewing = null;
         viewingError = null;
-        editing = false;
 
-        if (profileId is null || profileId == State.MyProfile?.Id)
+        if (profileId is not null && profileId == State.MyProfile?.Id)
+        {
+            viewingId = null;
+            WasMine?.Invoke();
+            return;
+        }
+
+        if (profileId is null)
         {
             viewingId = null;
             return;
@@ -86,10 +96,38 @@ public sealed class ProfileTab : IDisposable
     /// The frame this tab last drew on.
     private int lastDrawnFrame = -10;
 
+
+    /// How tall the shelf of their best work is.
+    private const float ShelfDesign = 150f;
+
+    /// How many of their best the shelf holds.
+    private const int ShelfSlots = 6;
+
+    /// How big the picture at the head of the page is.
+    private const float DiscDesign = 84f;
+
+
+    /// Air kept clear at the right-hand end of the identity band.
+    private const float GutterDesign = 16f;
+
+    /// Narrowest a card in the grid may be.
+    private const float CardDesign = 180f;
+
+    /// Set by the fetch when the relay says the page somebody asked for is their own.
+    private volatile bool landedMine;
+
     public void Draw()
     {
         State.EnsureSettings();
         cropper.Draw();
+
+        if (landedMine)
+        {
+            landedMine = false;
+            Stop();
+            WasMine?.Invoke();
+            return;
+        }
 
         var frame = ImGui.GetFrameCount();
         var returning = frame - lastDrawnFrame > 1;
@@ -97,349 +135,67 @@ public sealed class ProfileTab : IDisposable
 
         if (viewingId is not null)
         {
-            DrawSomebodyElse();
+            DrawTheirs();
             return;
         }
 
-        State.RefreshProfile(force: returning && !editing);
+        State.RefreshProfile(force: returning);
         DrawMine();
     }
 
-
     private void DrawMine()
     {
-        var scale = UiHelpers.Scale;
-
         if (State.ProfileError is { } failure)
         {
-            DrawNotice(FontAwesomeIcon.PlugCircleExclamation, "Your profile couldn't be loaded", failure);
+            Notice.Fail(ImGui.GetContentRegionAvail().X, "Your profile couldn't be loaded", failure);
             return;
         }
 
         if (State.MyProfile is not { } profile)
         {
-            DrawNotice(FontAwesomeIcon.Spinner, "Loading", "Fetching your profile.");
+            Notice.Busy(ImGui.GetContentRegionAvail().X, "Loading", "Fetching your profile.");
             return;
         }
 
-        DrawHeader(profile, mine: true);
-        ImGui.Dummy(new Vector2(0f, 10f * scale));
-
-        var height = 24f * scale;
-
-        if (EchoButton.Draw(
-                "##mineglam", $"Published ({profile.Glamours.Count})", new Vector2(0f, height),
-                selected: !showingFavourites))
-            showingFavourites = false;
-
-        ImGui.SameLine(0f, 6f * scale);
-
-        if (EchoButton.Draw(
-                "##minefav", $"Saved ({profile.Favourites.Count})", new Vector2(0f, height),
-                selected: showingFavourites))
-            showingFavourites = true;
-
-        ImGui.Dummy(new Vector2(0f, 8f * scale));
-
-        var list = showingFavourites ? profile.Favourites : profile.Glamours;
-
-        if (list.Count == 0)
-        {
-            ImGui.TextColored(
-                Theme.TextDim,
-                showingFavourites
-                    ? "Nothing saved yet. The star on a glamour keeps it here."
-                    : "Nothing published yet. Build a look in the Dressing Room, then publish it from the Gallery.");
-
-            return;
-        }
-
-        DrawGrid(list, mine: !showingFavourites);
+        DrawPage(profile, mine: true);
     }
 
-    /// The header: banner, avatar, name, counts, and the controls that belong to whoever is looking.
-    private void DrawHeader(ProfileSummary profile, bool mine)
+    private void DrawTheirs()
     {
-        var scale = UiHelpers.Scale;
-        var drawList = ImGui.GetWindowDrawList();
-        var width = ImGui.GetContentRegionAvail().X;
-
-        var contentLeft = ImGui.GetCursorPosX();
-
-        var bannerHeight = MathF.Min(180f * scale, width / 4f);
         var origin = ImGui.GetCursorScreenPos();
 
-        ImGui.Dummy(new Vector2(width, bannerHeight));
+        if (viewingId is { } target)
+            DrawReportPopup(target);
 
-        drawList.AddRectFilled(
-            origin, origin + new Vector2(width, bannerHeight),
-            ImGui.GetColorU32(Theme.Tinted(0.10f)), Theme.CardRounding);
-
-        if (profile.HasBanner && images.Get(GalleryClient.BannerUrl(profile)) is { } banner)
+        if (BackLink.Draw(
+                ImGui.GetWindowDrawList(), plugin.Fonts.Icon, "##profileback",
+                returnTo is null ? "My profile" : "Back", origin, Metrics.TouchMin))
         {
-            var (uv0, uv1) = Cover(banner.Width, banner.Height, width, bannerHeight);
-
-            drawList.AddImageRounded(
-                banner.Handle, origin, origin + new Vector2(width, bannerHeight),
-                uv0, uv1, ImGui.GetColorU32(Vector4.One), Theme.CardRounding);
-        }
-
-        drawList.AddRect(
-            origin, origin + new Vector2(width, bannerHeight), ImGui.GetColorU32(Theme.Border),
-            Theme.CardRounding, ImDrawFlags.None, 1.2f * scale);
-
-        var avatarSize = 130f * scale;
-        var avatarMin = new Vector2(origin.X + (16f * scale), origin.Y + bannerHeight - (avatarSize / 2f));
-
-        drawList.AddRectFilled(
-            avatarMin - new Vector2(3f * scale, 3f * scale),
-            avatarMin + new Vector2(avatarSize + (3f * scale), avatarSize + (3f * scale)),
-            ImGui.GetColorU32(Theme.Background), 10f * scale);
-
-        drawList.AddRectFilled(
-            avatarMin, avatarMin + new Vector2(avatarSize, avatarSize),
-            ImGui.GetColorU32(Theme.Tinted(0.16f)), 8f * scale);
-
-        if (profile.HasAvatar && images.Get(GalleryClient.AvatarUrl(profile)) is { } avatar)
-        {
-            drawList.AddImageRounded(
-                avatar.Handle, avatarMin, avatarMin + new Vector2(avatarSize, avatarSize),
-                Vector2.Zero, Vector2.One, ImGui.GetColorU32(Vector4.One), 8f * scale);
-        }
-        else
-        {
-            using (plugin.Fonts.Icon.PushSafe())
-            {
-                UiHelpers.DrawScaledIcon(
-                    drawList, FontAwesomeIcon.User,
-                    avatarMin + new Vector2(avatarSize / 2f, avatarSize / 2f),
-                    ImGui.GetColorU32(Theme.TextDisabled));
-            }
-        }
-
-        drawList.AddRect(
-            avatarMin, avatarMin + new Vector2(avatarSize, avatarSize), ImGui.GetColorU32(Theme.Accent),
-            8f * scale, ImDrawFlags.None, 1.5f * scale);
-
-        ImGui.Dummy(new Vector2(0f, (avatarSize / 2f) + (6f * scale)));
-
-        var textX = ImGui.GetCursorPosX() + (16f * scale) + avatarSize + (14f * scale);
-        var textTop = ImGui.GetCursorPosY() - (avatarSize / 2f) - (2f * scale);
-
-        ImGui.SetCursorPos(new Vector2(textX, textTop));
-        ImGui.BeginGroup();
-
-        var name = string.IsNullOrWhiteSpace(profile.DisplayName) ? "Unnamed" : profile.DisplayName;
-        float nameHeight;
-
-        using (plugin.Fonts.Header.PushSafe())
-        {
-            nameHeight = ImGui.GetTextLineHeight();
-            ImGui.TextUnformatted(name);
-        }
-
-        if (mine && !editing)
-        {
-            var buttonHeight = 24f * scale;
-            var editWidth = EchoButton.ContentSize("Edit", plugin.Fonts.Icon, FontAwesomeIcon.UserEdit).X;
-
-            ImGui.SameLine(0f, 0f);
-            ImGui.SetCursorPosX(contentLeft + width - editWidth);
-            ImGui.SetCursorPosY(ImGui.GetCursorPosY() + MathF.Max(0f, (nameHeight - buttonHeight) / 2f));
-
-            if (EchoButton.Draw(
-                    "##editprofile", "Edit", new Vector2(0f, buttonHeight),
-                    iconFont: plugin.Fonts.Icon, icon: FontAwesomeIcon.UserEdit,
-                    tooltip: "Your bio, avatar and banner."))
-            {
-                draftName = profile.DisplayName;
-                draftBio = State.MyProfile?.Bio ?? string.Empty;
-                wrapBioOnNextDraw = true;
-                draftWorld = profile.HomeWorld;
-                editing = true;
-                problem = null;
-            }
-        }
-
-        var where = string.IsNullOrWhiteSpace(profile.HomeWorld) ? "" : profile.HomeWorld + "  ·  ";
-        ImGui.TextColored(
-            Theme.TextDim,
-            $"{where}{profile.Published} published  ·  {profile.Followers} follower{(profile.Followers == 1 ? "" : "s")}"
-            + $"  ·  {profile.Following} following");
-
-        if (!mine)
-        {
-            ImGui.Dummy(new Vector2(0f, 6f * scale));
-            DrawTheirControls(profile);
-        }
-
-        ImGui.EndGroup();
-        ImGui.Dummy(new Vector2(0f, 6f * scale));
-
-        if (mine)
-            DrawMyControls();
-
-        if (viewing is { Bio.Length: > 0 } theirs && !mine)
-        {
-            ImGui.Dummy(new Vector2(0f, 6f * scale));
-            ImGui.PushTextWrapPos(ImGui.GetCursorPosX() + width);
-            ImGui.TextUnformatted(theirs.Bio);
-            ImGui.PopTextWrapPos();
-        }
-    }
-
-    private void DrawMyControls()
-    {
-        var scale = UiHelpers.Scale;
-        var height = 24f * scale;
-        var profile = State.MyProfile!;
-
-        if (!editing)
-        {
-            if (!string.IsNullOrWhiteSpace(profile.Bio))
-            {
-                ImGui.PushTextWrapPos(ImGui.GetCursorPosX() + ImGui.GetContentRegionAvail().X);
-                ImGui.TextUnformatted(profile.Bio);
-                ImGui.PopTextWrapPos();
-            }
-
-            if (problem is { } issue)
-            {
-                ImGui.Dummy(new Vector2(0f, 4f * scale));
-                ImGui.TextColored(Theme.Bad, issue);
-            }
-
+            GoBack();
             return;
         }
 
-        var width = ImGui.GetContentRegionAvail().X;
-
-        ImGui.TextColored(Theme.TextDim, $"Bio  ({draftBio.Length}/400)");
-
-        var bioWrap = width - (ImGui.GetStyle().FramePadding.X * 2f) - (18f * scale);
-
-        if (wrapBioOnNextDraw)
-        {
-            draftBio = UiHelpers.Rewrap(draftBio, bioWrap);
-            wrapBioOnNextDraw = false;
-        }
-
-        bioWrapWidth = bioWrap;
-
-        UiHelpers.WrappingInputTextMultiline(
-            "##profilebio", ref draftBio, 400, new Vector2(width, 64f * scale), bioWrap);
-
-        ImGui.Dummy(new Vector2(0f, 10f * scale));
-        ImGui.TextColored(Theme.TextDim, "Pictures");
-        ImGui.Dummy(new Vector2(0f, 4f * scale));
-
-        if (EchoButton.Draw(
-                "##setavatar", profile.HasAvatar ? "Change Avatar" : "Add Avatar", new Vector2(0f, height),
-                iconFont: plugin.Fonts.Icon, icon: FontAwesomeIcon.Image,
-                tooltip: profile.HasAvatar ? "Right-click to remove it." : "Pick a picture."))
-            PickPicture(avatar: true);
-
-        if (EchoButton.RightClicked() && profile.HasAvatar)
-            ClearPicture(avatar: true);
-
-        ImGui.SameLine(0f, 6f * scale);
-
-        if (EchoButton.Draw(
-                "##setbanner", profile.HasBanner ? "Change Banner" : "Add Banner", new Vector2(0f, height),
-                iconFont: plugin.Fonts.Icon, icon: FontAwesomeIcon.Images,
-                tooltip: profile.HasBanner ? "Right-click to remove it." : "Pick a picture."))
-            PickPicture(avatar: false);
-
-        if (EchoButton.RightClicked() && profile.HasBanner)
-            ClearPicture(avatar: false);
-
-        ImGui.Dummy(new Vector2(0f, 10f * scale));
-
-        if (EchoButton.Draw("##saveprofile", saving ? "Saving..." : "Save", new Vector2(0f, height), enabled: !saving))
-            SaveProfile();
-
-        ImGui.SameLine(0f, 6f * scale);
-
-        if (EchoButton.Draw("##cancelprofile", "Cancel", new Vector2(0f, height), enabled: !saving))
-        {
-            editing = false;
-            problem = null;
-        }
-
-        if (problem is { } message)
-        {
-            ImGui.Dummy(new Vector2(0f, 4f * scale));
-            ImGui.TextColored(Theme.Bad, message);
-        }
-    }
-
-    private void DrawTheirControls(ProfileSummary profile)
-    {
-        var scale = UiHelpers.Scale;
-        var height = 24f * scale;
-
-        if (EchoButton.Draw(
-                "##follow", profile.IsFollowing ? "Following" : "Follow", new Vector2(0f, height),
-                iconFont: plugin.Fonts.Icon,
-                icon: profile.IsFollowing ? FontAwesomeIcon.UserCheck : FontAwesomeIcon.UserPlus,
-                selected: profile.IsFollowing))
-            ToggleFollow(profile.Id);
-
-        ImGui.SameLine(0f, 6f * scale);
-
-        if (EchoButton.Draw(
-                "##reportprofile", null, new Vector2(0f, height),
-                iconFont: plugin.Fonts.Icon, icon: FontAwesomeIcon.Flag,
-                tooltip: "Report this profile."))
-            ImGui.OpenPopup(ReportPopupId);
-
-        DrawReportPopup(profile.Id);
-    }
-
-
-    private void DrawSomebodyElse()
-    {
-        var scale = UiHelpers.Scale;
-
-        DrawBack();
-        ImGui.Dummy(new Vector2(0f, 8f * scale));
+        ImGui.SetCursorScreenPos(new Vector2(origin.X, origin.Y + Metrics.TouchMin + Sp.Lg));
 
         if (viewingError is { } failure)
         {
-            DrawNotice(FontAwesomeIcon.PlugCircleExclamation, "That profile couldn't be opened", failure);
+            Notice.Fail(ImGui.GetContentRegionAvail().X, "That profile couldn't be opened", failure);
             return;
         }
 
         if (viewing is not { } profile)
         {
-            DrawNotice(FontAwesomeIcon.Spinner, "Loading", "Fetching that profile.");
+            Notice.Busy(ImGui.GetContentRegionAvail().X, "Loading", "Fetching that profile.");
             return;
         }
 
-        DrawHeader(profile, mine: false);
-        ImGui.Dummy(new Vector2(0f, 12f * scale));
-
-        if (profile.Glamours.Count == 0)
-        {
-            ImGui.TextColored(Theme.TextDim, "Nothing published.");
-            return;
-        }
-
-        Theme.SectionHeader($"Published ({profile.Glamours.Count})");
-        ImGui.Dummy(new Vector2(0f, 6f * scale));
-
-        DrawGrid(profile.Glamours, mine: false);
+        DrawPage(profile, mine: false);
     }
 
     /// Back to wherever this page was opened from, or to your own if it was opened from nowhere in
     /// particular.
-    private void DrawBack()
+    private void GoBack()
     {
-        if (!EchoButton.Draw(
-                "##profileback", "Back", new Vector2(0f, 26f * UiHelpers.Scale),
-                iconFont: plugin.Fonts.Icon, icon: FontAwesomeIcon.ChevronLeft))
-            return;
-
         var back = returnTo;
         returnTo = null;
 
@@ -449,9 +205,529 @@ public sealed class ProfileTab : IDisposable
             View(null);
     }
 
+
+    /// The shelf, the person, the grid.
+    private void DrawPage(ProfileDetail profile, bool mine)
+    {
+        var halo = EchoButton.GlowReach;
+
+        var available = ImGui.GetContentRegionAvail() - new Vector2(halo, halo);
+        var origin = ImGui.GetCursorScreenPos();
+
+        var shelf = DrawShelf(profile, mine, available.X);
+
+        ImGui.SetCursorScreenPos(new Vector2(origin.X, origin.Y + shelf));
+        var identity = DrawIdentity(profile, mine, available.X);
+
+        ImGui.SetCursorScreenPos(new Vector2(origin.X, origin.Y + shelf + identity));
+        var band = DrawViewBand(profile, mine, available.X);
+
+        var consumed = shelf + identity + band;
+
+        ImGui.SetCursorScreenPos(new Vector2(origin.X, origin.Y + consumed));
+
+        DrawWork(profile, mine, available.X, MathF.Max(Metrics.RowTall * 2f, available.Y - consumed));
+    }
+
+
+    /// Their best work, as the page's header image, in place of the banner that used to be here.
+    private float DrawShelf(ProfileDetail profile, bool mine, float width)
+    {
+        var drawList = ImGui.GetWindowDrawList();
+        var origin = ImGui.GetCursorScreenPos();
+        var size = new Vector2(width, ShelfDesign * UiHelpers.Scale);
+        var max = origin + size;
+
+        drawList.AddRectFilled(origin, max, Col.U32(Col.Sunken), Rad.Card);
+
+        var featured = Featured(profile);
+
+        if (featured.Count == 0)
+            DrawEmptyShelf(drawList, origin, size, mine);
+        else
+            DrawFeatured(drawList, featured, origin, size);
+
+        drawList.AddRect(
+            origin, max, Col.U32(Col.EdgeRest with { W = 0.45f }), Rad.Card, ImDrawFlags.None, Stroke.Hair);
+
+        ImGui.SetCursorScreenPos(origin);
+        ImGui.Dummy(size);
+
+        return size.Y + Sp.Xl;
+    }
+
+    /// The pictures on the shelf.
+    private void DrawFeatured(
+        ImDrawListPtr drawList, List<GlamourSummary> entries, Vector2 min, Vector2 size)
+    {
+        var inset = Sp.Xs;
+        var gap = Sp.Xs;
+        var slotHeight = size.Y - (inset * 2f);
+
+        var slotWidth = (size.X - (inset * 2f) - (gap * (ShelfSlots - 1))) / ShelfSlots;
+        var run = (slotWidth * entries.Count) + (gap * (entries.Count - 1));
+        var left = min.X + ((size.X - run) / 2f);
+
+        for (var i = 0; i < entries.Count; i++)
+        {
+            var entry = entries[i];
+            var slot = new Vector2(slotWidth, slotHeight);
+            var slotMin = new Vector2(left + (i * (slotWidth + gap)), min.Y + inset);
+
+            var cursor = ImGui.GetCursorScreenPos();
+            ImGui.SetCursorScreenPos(slotMin);
+
+            var clicked = ImGui.InvisibleButton($"##featured{i}", slot, ImGuiButtonFlags.MouseButtonLeft);
+            var hovered = ImGui.IsItemHovered();
+
+            ImGui.SetCursorScreenPos(cursor);
+
+            if (hovered)
+                ImGui.SetMouseCursor(ImGuiMouseCursor.Hand);
+
+            var warm = Motion.Toward($"featured{entry.Id}", hovered, 16f);
+
+            drawList.AddRectFilled(slotMin, slotMin + slot, Col.U32(Col.Surface), Rad.Panel);
+
+            var url = entry.ImageCount > 0 ? GalleryClient.ImageUrl(entry, 0, card: true) : null;
+            var texture = url is null ? null : images.Get(url);
+
+            if (texture != null)
+            {
+                var (uv0, uv1) = HeadCrop(texture.Width, texture.Height, slotWidth, slotHeight);
+
+                drawList.AddImageRounded(
+                    texture.Handle, slotMin, slotMin + slot, uv0, uv1,
+                    Col.U32(new Vector4(1f, 1f, 1f, 0.84f + (0.16f * warm))), Rad.Panel);
+            }
+            else
+            {
+                using (Text.PushCaption())
+                {
+                    var label = url is null || images.Failed(url) ? "No screenshot" : "Loading...";
+
+                    drawList.AddText(
+                        slotMin + ((slot - new Vector2(Text.Width(label), Text.CaptionSize)) / 2f),
+                        Col.U32(Col.TextMuted), label);
+                }
+            }
+
+            DrawShelfCaption(drawList, entry, slotMin, slot);
+
+            drawList.AddRect(
+                slotMin, slotMin + slot,
+                Col.U32(Vector4.Lerp(Col.EdgeRest with { W = 0.4f }, Theme.Accent, warm)),
+                Rad.Panel, ImDrawFlags.None, warm > 0.5f ? Stroke.Edge : Stroke.Hair);
+
+            if (clicked)
+                OpenGlamour?.Invoke(entry.Id);
+        }
+    }
+
+    /// The title and its tallies, on the picture.
+    private void DrawShelfCaption(
+        ImDrawListPtr drawList, GlamourSummary entry, Vector2 min, Vector2 size)
+    {
+        var clear = Col.U32(new Vector4(0f, 0f, 0f, 0f));
+        var solid = Col.U32(new Vector4(0f, 0f, 0f, 0.82f));
+        var rounding = Rad.Panel;
+
+        var line = Text.CaptionSize * 1.15f;
+        var band = line + (Sp.Md * 2f);
+        var bandTop = min.Y + size.Y - band;
+
+        var foot = rounding * 3f;
+        var fadeBottom = MathF.Max(bandTop, min.Y + size.Y - foot);
+
+        drawList.PushClipRect(min, min + size, true);
+
+        drawList.AddRectFilledMultiColor(
+            new Vector2(min.X, bandTop), new Vector2(min.X + size.X, fadeBottom), clear, clear, solid, solid);
+
+        drawList.AddRectFilled(
+            new Vector2(min.X, fadeBottom), min + size, solid, rounding, ImDrawFlags.RoundCornersBottom);
+
+        var left = min.X + Sp.Md;
+        var room = size.X - (Sp.Md * 2f);
+        var textY = min.Y + size.Y - Sp.Md - line;
+
+        using (Text.PushCaption())
+        {
+            var counts = UiHelpers.DrawGlamourCounts(
+                drawList, plugin.Fonts.Icon, new Vector2(left, textY), room,
+                entry.Votes, entry.Voted, entry.Favourites, entry.Favourited);
+
+            drawList.AddText(
+                new Vector2(left, textY), Col.U32(Vector4.One),
+                Text.Truncate(entry.Title, MathF.Max(0f, room - counts - Sp.Sm)));
+        }
+
+        drawList.PopClipRect();
+    }
+
+    /// The shelf with nothing on it.
+    private void DrawEmptyShelf(ImDrawListPtr drawList, Vector2 min, Vector2 size, bool mine)
+    {
+        var centre = min + (size / 2f);
+
+        using (plugin.Fonts.Icon.PushSafe())
+        {
+            UiHelpers.DrawScaledIcon(
+                drawList, FontAwesomeIcon.Images,
+                centre - new Vector2(0f, Sp.Xxl), Col.U32(Theme.AccentSoft));
+        }
+
+        var heading = mine ? "Your best work shows here" : "Nothing published yet";
+
+        var detail = mine
+            ? "Publish a look from the Gallery. Whatever people vote for fills this shelf."
+            : "They haven't put a glamour on the board.";
+
+        var leading = ImGui.GetTextLineHeight();
+
+        drawList.AddText(
+            new Vector2(centre.X - (Text.Width(heading) / 2f), centre.Y), Col.U32(Col.Text), heading);
+
+        using (Text.PushCaption())
+        {
+            drawList.AddText(
+                new Vector2(centre.X - (Text.Width(detail) / 2f), centre.Y + leading + Sp.Xs),
+                Col.U32(Col.TextMuted), detail);
+        }
+    }
+
+    /// Cover UVs biased toward the top of the source.
+    private static (Vector2 Uv0, Vector2 Uv1) HeadCrop(
+        int textureWidth, int textureHeight, float width, float height)
+    {
+        var (uv0, uv1) = Avatar.Cover(textureWidth, textureHeight, width, height);
+
+        if (uv1.Y - uv0.Y >= 0.999f)
+            return (uv0, uv1);
+
+        var shift = uv0.Y * 0.75f;
+        return (uv0 with { Y = uv0.Y - shift }, uv1 with { Y = uv1.Y - shift });
+    }
+
+    /// Their best work, best first.
+    private List<GlamourSummary> Featured(ProfileDetail profile)
+    {
+        if (ReferenceEquals(featuredFor, profile))
+            return featured;
+
+        featuredFor = profile;
+
+        featured =
+        [
+            .. profile.Glamours
+                .OrderByDescending(entry => entry.Votes)
+                .ThenByDescending(entry => entry.Favourites)
+                .ThenByDescending(entry => entry.PublishedUtc)
+                .Take(ShelfSlots),
+        ];
+
+        var likes = 0;
+        var saves = 0;
+
+        foreach (var entry in profile.Glamours)
+        {
+            likes += entry.Votes;
+            saves += entry.Favourites;
+        }
+
+        tallies = (likes, saves);
+
+        return featured;
+    }
+
+    /// What their published work has earned, added up.
+    private (int Likes, int Saves) Tallies(ProfileDetail profile)
+    {
+        Featured(profile);
+        return tallies;
+    }
+
+    private ProfileDetail? featuredFor;
+    private List<GlamourSummary> featured = [];
+    private (int Likes, int Saves) tallies;
+
+
+    /// Who they are, on one row: the picture, the name, the two counts, and what you can do about them.
+    private float DrawIdentity(ProfileDetail profile, bool mine, float width)
+    {
+        var drawList = ImGui.GetWindowDrawList();
+        var origin = ImGui.GetCursorScreenPos();
+        var scale = UiHelpers.Scale;
+
+        var disc = DiscDesign * scale;
+        var row = disc;
+        var right = origin.X + width - (GutterDesign * scale);
+
+
+        if (!mine)
+        {
+            var followWidth = MathF.Max(
+                EchoButton.ContentSize("Following", plugin.Fonts.Icon, FontAwesomeIcon.UserCheck).X,
+                EchoButton.ContentSize("Follow", plugin.Fonts.Icon, FontAwesomeIcon.UserPlus).X) + Sp.Xl;
+
+            var run = followWidth + Sp.Sm + Metrics.Row;
+
+            ImGui.SetCursorScreenPos(new Vector2(right - run, origin.Y + ((row - Metrics.Row) / 2f)));
+
+            if (EchoButton.Draw(
+                    "##follow", profile.IsFollowing ? "Following" : "Follow",
+                    new Vector2(followWidth, Metrics.Row),
+                    iconFont: plugin.Fonts.Icon,
+                    icon: profile.IsFollowing ? FontAwesomeIcon.UserCheck : FontAwesomeIcon.UserPlus,
+                    selected: profile.IsFollowing,
+                    tooltip: profile.IsFollowing
+                        ? "Stop following them."
+                        : "Adds them to the people you follow.",
+                    primary: !profile.IsFollowing))
+                ToggleFollow(profile.Id);
+
+            ImGui.SameLine(0f, Sp.Sm);
+
+            if (EchoButton.Draw(
+                    "##reportprofile", null, new Vector2(Metrics.Row, Metrics.Row),
+                    iconFont: plugin.Fonts.Icon, icon: FontAwesomeIcon.Flag,
+                    tooltip: "Report this profile."))
+                ImGui.OpenPopup(ReportPopupId);
+
+            right -= run + Sp.Xxl;
+        }
+
+        var (likes, saves) = Tallies(profile);
+
+        var followers = (int)MathF.Round(Motion.Count($"followers{profile.Id}", profile.Followers));
+
+        MetaCell[] counts =
+        [
+            new MetaCell("Followers", followers.ToString(), Tooltip: "People following this profile."),
+            new MetaCell("Following", profile.Following.ToString(), Tooltip: "Profiles they follow."),
+            new MetaCell(
+                "Likes", likes.ToString(), Col.Vote,
+                "Every vote their published glamours have between them."),
+            new MetaCell(
+                "Saves", saves.ToString(), Col.Favourite,
+                "How many times somebody starred one of their glamours."),
+        ];
+
+        var tiles = Meta.Width(counts);
+
+        ImGui.SetCursorScreenPos(
+            new Vector2(right - tiles, origin.Y + ((row - Meta.TileHeight) / 2f)));
+
+        Meta.Tiles(tiles, counts);
+
+        right -= tiles + Sp.Xxl;
+
+
+        var inset = Avatar.Halo;
+
+        DrawPicture(drawList, profile, mine, origin with { X = origin.X + inset }, disc);
+
+        var textLeft = origin.X + inset + disc + Sp.Xl;
+        var room = MathF.Max(Sp.Xxxl, right - textLeft);
+
+        var block = (Text.DisplaySize * 1.2f) + (Text.CaptionSize * 1.4f);
+        var textTop = origin.Y + ((row - block) / 2f);
+
+        var name = string.IsNullOrWhiteSpace(profile.DisplayName) ? "Unnamed" : profile.DisplayName;
+
+        using (Text.PushDisplay())
+        {
+            drawList.AddText(
+                new Vector2(textLeft, textTop), Col.U32(Col.Text), Text.Truncate(name, room));
+        }
+
+        var world = string.IsNullOrWhiteSpace(profile.HomeWorld) ? "Unknown World" : profile.HomeWorld;
+
+        using (Text.PushCaption())
+        {
+            Text.Tracked(
+                drawList, new Vector2(textLeft, textTop + (Text.DisplaySize * 1.2f)),
+                world.ToUpperInvariant(), Col.U32(Col.TextDim), 1.6f, room);
+        }
+
+        var bottom = origin.Y + row;
+
+        if (mine && problem is { } issue)
+        {
+            using (Text.PushCaption())
+            {
+                drawList.AddText(
+                    new Vector2(origin.X, bottom + Sp.Sm), Col.U32(Col.Danger),
+                    Text.Truncate(issue, width));
+
+                bottom += Sp.Sm + (Text.CaptionSize * 1.4f);
+            }
+        }
+
+        var ruleY = bottom + Sp.Lg;
+
+        drawList.AddRectFilled(
+            new Vector2(origin.X, ruleY), new Vector2(origin.X + width, ruleY + Stroke.Hair),
+            Col.U32(Col.EdgeRest with { W = 0.55f }));
+
+        ImGui.SetCursorScreenPos(origin);
+        ImGui.Dummy(new Vector2(width, row));
+
+        return ruleY + Stroke.Hair + Sp.Lg - origin.Y;
+    }
+
+    /// Their picture, which on your own page is also the control that changes it.
+    private void DrawPicture(
+        ImDrawListPtr drawList, ProfileSummary profile, bool mine, Vector2 min, float disc)
+    {
+        var url = profile.HasAvatar ? GalleryClient.AvatarUrl(profile) : null;
+
+        if (Avatar.Draw(drawList, images, url, profile.DisplayName, min, disc, interactive: mine))
+            PickPicture();
+
+        if (!mine)
+            return;
+
+        var centre = min + new Vector2(disc / 2f, disc / 2f);
+        var radius = disc / 2f;
+
+        var badge = disc * 0.3f;
+        var offset = radius * 0.68f;
+        var badgeCentre = centre + new Vector2(offset, offset);
+
+        drawList.AddCircleFilled(badgeCentre, (badge / 2f) + Stroke.Mark, Col.U32(Col.Window));
+        drawList.AddCircleFilled(badgeCentre, badge / 2f, Col.U32(Theme.Accent));
+
+        using (plugin.Fonts.Icon.PushSafe())
+            UiHelpers.DrawScaledIcon(drawList, FontAwesomeIcon.Camera, badgeCentre, Col.U32(Col.TextOnAccent));
+
+        if (!ImGui.IsMouseHoveringRect(min, min + new Vector2(disc, disc)))
+            return;
+
+        UiHelpers.WrappedTooltip(
+            profile.HasAvatar
+                ? "Click to pick a different picture. Right-click to take this one off."
+                : "Click to add a picture. It shows on every glamour you publish.");
+
+        if (profile.HasAvatar && ImGui.IsMouseClicked(ImGuiMouseButton.Right))
+            SetPicture(null);
+    }
+
+
+    /// Which list, and how long it is.
+    private float DrawViewBand(ProfileDetail profile, bool mine, float width)
+    {
+        var drawList = ImGui.GetWindowDrawList();
+        var origin = ImGui.GetCursorScreenPos();
+        var row = Metrics.Row;
+
+        if (mine)
+        {
+            ReadOnlySpan<string> views = ["Published", "Saved"];
+
+            ImGui.SetCursorScreenPos(origin);
+
+            showingFavourites = EchoSegment.Draw(
+                "##mineviews", views, showingFavourites ? 1 : 0, row,
+                [
+                    "Glamours you have put on the board.",
+                    "Glamours you starred. Only you see this list.",
+                ]) == 1;
+        }
+        else
+        {
+            using (Text.PushCaption())
+            {
+                Text.Tracked(
+                    drawList, new Vector2(origin.X, origin.Y + ((row - Text.CaptionSize) / 2f)),
+                    "PUBLISHED", Col.U32(Col.TextMuted), 1.8f, width);
+            }
+        }
+
+        var list = Showing(profile, mine);
+        var count = list.Count == 1 ? "1 glamour" : $"{list.Count} glamours";
+
+        using (Text.PushCaption())
+        {
+            drawList.AddText(
+                new Vector2(
+                    origin.X + width - Text.Width(count), origin.Y + ((row - Text.CaptionSize) / 2f)),
+                Col.U32(Col.TextMuted with { W = 0.75f }), count);
+        }
+
+        var ruleY = origin.Y + row + Sp.Md;
+
+        drawList.AddRectFilled(
+            new Vector2(origin.X, ruleY), new Vector2(origin.X + width, ruleY + Stroke.Hair),
+            Col.U32(Col.EdgeRest with { W = 0.55f }));
+
+        ImGui.SetCursorScreenPos(origin);
+        ImGui.Dummy(new Vector2(width, row));
+
+        return ruleY + Stroke.Hair + Sp.Lg - origin.Y;
+    }
+
+    private List<GlamourSummary> Showing(ProfileDetail profile, bool mine) =>
+        mine && showingFavourites ? profile.Favourites : profile.Glamours;
+
+    /// The grid.
+    private void DrawWork(ProfileDetail profile, bool mine, float width, float height)
+    {
+        var list = Showing(profile, mine);
+
+        ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, Vector2.Zero);
+        var open = ImGui.BeginChild("##profilework", new Vector2(width, height), false);
+        ImGui.PopStyleVar();
+
+        if (open)
+        {
+            if (list.Count == 0)
+            {
+                var room = ImGui.GetContentRegionAvail().X;
+
+                if (mine && showingFavourites)
+                {
+                    Notice.Empty(
+                        room, FontAwesomeIcon.Star, "Nothing saved yet",
+                        "The star on a glamour keeps it here.");
+                }
+                else if (mine)
+                {
+                    Notice.Empty(
+                        room, FontAwesomeIcon.Images, "Nothing published yet",
+                        "Build a look in the Dressing Room, then publish it from the Gallery.");
+                }
+                else
+                {
+                    Notice.Empty(
+                        room, FontAwesomeIcon.Images, "Nothing published",
+                        "They haven't put a glamour on the board yet.");
+                }
+            }
+            else
+            {
+                CardGrid.Draw(
+                    list, entry => $"prof{entry.Id}", DrawCard,
+                    stripDesign: 0f, minCard: CardDesign * UiHelpers.Scale);
+            }
+        }
+
+        ImGui.EndChild();
+    }
+
+    /// One card's contents.
+    private void DrawCard(GlamourSummary entry, CardSlot slot)
+    {
+        GlamourCard.Draw(
+            ImGui.GetWindowDrawList(), images, plugin.Fonts.Icon, entry, slot, showAuthor: false);
+
+        if (slot.Clicked)
+            OpenGlamour?.Invoke(entry.Id);
+    }
+
+
     private void LoadViewing(string profileId)
     {
-
         _ = Task.Run(async () =>
         {
             try
@@ -468,7 +744,7 @@ public sealed class ProfileTab : IDisposable
 
                 if (loaded.Mine)
                 {
-                    viewingId = null;
+                    landedMine = true;
                     return;
                 }
 
@@ -481,74 +757,83 @@ public sealed class ProfileTab : IDisposable
         });
     }
 
-
-    /// A compact grid of glamour cards.
-    private void DrawGrid(System.Collections.Generic.List<GlamourSummary> entries, bool mine)
+    private void ToggleFollow(string profileId)
     {
-        var scale = UiHelpers.Scale;
-        var gap = 10f * scale;
-        var available = ImGui.GetContentRegionAvail().X;
-
-        var columns = Math.Max(1, (int)((available + gap) / ((200f * scale) + gap)));
-        var cardWidth = (available - (gap * (columns - 1))) / columns;
-        var imageHeight = ImageProcessor.HeightFor(cardWidth);
-        var cardHeight = imageHeight + (46f * scale);
-
-        var drawList = ImGui.GetWindowDrawList();
-
-        for (var i = 0; i < entries.Count; i++)
+        _ = Task.Run(async () =>
         {
-            if (i % columns != 0)
-                ImGui.SameLine(0f, gap);
-
-            var entry = entries[i];
-            var pos = ImGui.GetCursorScreenPos();
-            var size = new Vector2(cardWidth, cardHeight);
-
-            var clicked = ImGui.InvisibleButton($"##profcard{entry.Id}", size, ImGuiButtonFlags.MouseButtonLeft);
-            var hovered = ImGui.IsItemHovered();
-
-            drawList.AddRectFilled(pos, pos + size, ImGui.GetColorU32(Theme.Panel), Theme.CardRounding);
-
-            if (entry.ImageCount > 0 && images.Get(GalleryClient.ImageUrl(entry, 0, card: true)) is { } texture)
+            try
             {
-                drawList.AddImageRounded(
-                    texture.Handle, pos, pos + new Vector2(cardWidth, imageHeight),
-                    Vector2.Zero, Vector2.One, ImGui.GetColorU32(Vector4.One),
-                    Theme.CardRounding, ImDrawFlags.RoundCornersTop);
+                var result = await GalleryClient
+                    .FollowAsync(profileId, State.OwnerKey, CancellationToken.None)
+                    .ConfigureAwait(false);
+
+                if (viewing is { } current && current.Id == profileId)
+                {
+                    current.IsFollowing = result.Active;
+                    current.Followers = result.Count;
+                }
             }
-            else
+            catch (Exception ex)
             {
-                drawList.AddRectFilled(
-                    pos, pos + new Vector2(cardWidth, imageHeight), ImGui.GetColorU32(Theme.Tinted(0.06f)),
-                    Theme.CardRounding, ImDrawFlags.RoundCornersTop);
+                viewingError = ex.Message;
             }
-
-            drawList.PushClipRect(pos, pos + size, true);
-            drawList.AddText(
-                pos + new Vector2(10f * scale, imageHeight + (7f * scale)),
-                ImGui.GetColorU32(Theme.Text),
-                UiHelpers.Truncate(entry.Title, cardWidth - (20f * scale)));
-
-            UiHelpers.DrawGlamourCounts(
-                drawList, plugin.Fonts.Icon,
-                pos + new Vector2(10f * scale, imageHeight + (7f * scale) + ImGui.GetTextLineHeight()),
-                cardWidth - (20f * scale),
-                entry.Votes, entry.Voted, entry.Favourites, entry.Favourited);
-
-            drawList.PopClipRect();
-
-            drawList.AddRect(
-                pos, pos + size,
-                ImGui.GetColorU32(hovered ? Theme.Accent : Theme.Border),
-                Theme.CardRounding, ImDrawFlags.None, (hovered ? 1.8f : 1.2f) * scale);
-
-            if (clicked)
-                OpenGlamour?.Invoke(entry.Id);
-
-        }
-
+        });
     }
+
+
+    /// Opens a file browser, then the cropper on whatever was chosen.
+    private void PickPicture()
+    {
+        problem = null;
+
+        var start = Screenshots.DirectoryExists
+            ? Screenshots.Directory
+            : Environment.GetFolderPath(Environment.SpecialFolder.MyPictures);
+
+        plugin.FileDialogs.OpenFileDialog(
+            "Pick a profile picture",
+            "Images{.png,.jpg,.jpeg,.bmp,.webp}",
+            (chosen, paths) =>
+            {
+                if (!chosen || paths.Count == 0)
+                    return;
+
+                _ = cropper.OpenAsync(
+                    paths[0],
+                    ImageProcessor.AvatarSize, ImageProcessor.AvatarSize,
+                    "Frame your picture",
+                    SetPicture);
+            },
+            1,
+            start);
+    }
+
+    /// Sends a new picture, or null to take the current one off.
+    private void SetPicture(byte[]? jpeg)
+    {
+        problem = null;
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var updated = await GalleryClient
+                    .SetPictureAsync(true, jpeg, State.OwnerKey, CancellationToken.None)
+                    .ConfigureAwait(false);
+
+                images.Forget(GalleryClient.AvatarUrlPrefix(updated.Id));
+
+                State.Adopt(updated);
+                State.RefreshProfile(force: true);
+            }
+            catch (Exception ex)
+            {
+                problem = ex.Message;
+            }
+        });
+    }
+
+
 
     private const string ReportPopupId = "##echoglamprofilereport";
 
@@ -557,43 +842,67 @@ public sealed class ProfileTab : IDisposable
     private bool reporting;
     private string? reportDone;
 
+    /// The report dialog's width and the wrap inside it, both from Modal so this one and the gallery's cannot
+    /// be different sizes for no reason - which they were, at 260 and 280.
+    private static float ReportWidth => Modal.Width(ModalSize.Small);
+
+    private static float ReportNoteWrap => Modal.WrapWidth(ModalSize.Small);
+
     private void DrawReportPopup(string profileId)
     {
-        if (!ImGui.BeginPopup(ReportPopupId))
+        if (!Modal.Begin(ReportPopupId, ModalSize.Small))
             return;
 
-        var scale = UiHelpers.Scale;
+        var width = ReportWidth;
 
-        Theme.SectionHeader("Report this profile", ruleWidth: 260f * scale);
-        ImGui.Dummy(new Vector2(0f, 4f * scale));
+        Field.Label("Report This Profile", width);
 
         foreach (var reason in State.Settings.ReportReasons)
         {
-            if (EchoButton.Draw($"##preason{reason}", reason, new Vector2(0f, 22f * scale), selected: reportReason == reason))
+            if (EchoButton.Draw(
+                    $"##preason{reason}", reason, new Vector2(width, Metrics.Row),
+                    selected: reportReason == reason))
                 reportReason = reason;
+
+            ImGui.Dummy(new Vector2(0f, Sp.Xxs));
         }
 
-        ImGui.Dummy(new Vector2(0f, 6f * scale));
-        ImGui.TextColored(Theme.TextDim, "Anything else worth knowing (optional)");
-        UiHelpers.WrappingInputTextMultiline(
-            "##pnote", ref reportNote, 300, new Vector2(260f * scale, 50f * scale), ReportNoteWrap);
+        ImGui.Dummy(new Vector2(0f, Sp.Sm));
 
-        ImGui.Dummy(new Vector2(0f, 6f * scale));
+        Field.Label(
+            "Anything Else Worth Knowing", reportNote.Length, ReportReasons.MaximumNoteLength, width);
+
+        Field.PushStyle();
+
+        UiHelpers.WrappingInputTextMultiline(
+            "##pnote", ref reportNote, ReportReasons.MaximumNoteLength,
+            new Vector2(width, Metrics.Field * 2f), ReportNoteWrap);
+
+        Field.PopStyle();
+
+        ImGui.Dummy(new Vector2(0f, Sp.Lg));
+
+        var ready = !reporting && !string.IsNullOrEmpty(reportReason);
 
         if (EchoButton.Draw(
-                "##psendreport", reporting ? "Sending..." : "Send", new Vector2(0f, 24f * scale),
-                enabled: !reporting && !string.IsNullOrEmpty(reportReason)))
-        {
+                "##psendreport", reporting ? "Sending..." : "Send", new Vector2(width, Metrics.Row),
+                enabled: ready, primary: ready))
             SendReport(profileId);
-        }
 
         if (reportDone is { } message)
         {
-            ImGui.Dummy(new Vector2(0f, 4f * scale));
-            ImGui.TextColored(Theme.Good, message);
+            ImGui.Dummy(new Vector2(0f, Sp.Sm));
+
+            using (Text.PushCaption())
+            {
+                ImGui.GetWindowDrawList().AddText(
+                    ImGui.GetCursorScreenPos(), Col.U32(Col.Success), Text.Truncate(message, width));
+            }
+
+            ImGui.Dummy(new Vector2(width, Text.CaptionSize * 1.4f));
         }
 
-        ImGui.EndPopup();
+        Modal.End();
     }
 
     private void SendReport(string profileId)
@@ -627,181 +936,5 @@ public sealed class ProfileTab : IDisposable
                 reporting = false;
             }
         });
-    }
-
-    private void ToggleFollow(string profileId)
-    {
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                var result = await GalleryClient
-                    .FollowAsync(profileId, State.OwnerKey, CancellationToken.None)
-                    .ConfigureAwait(false);
-
-                if (viewing is { } current && current.Id == profileId)
-                {
-                    current.IsFollowing = result.Active;
-                    current.Followers = result.Count;
-                }
-            }
-            catch (Exception ex)
-            {
-                viewingError = ex.Message;
-            }
-        });
-    }
-
-    private void SaveProfile()
-    {
-        saving = true;
-        problem = null;
-
-        var (characterName, characterWorld) = GalleryState.Character;
-
-        var submission = new ProfileSubmission
-        {
-            OwnerKey = State.OwnerKey,
-            DisplayName = string.IsNullOrEmpty(characterName) ? State.MyProfile?.DisplayName ?? string.Empty : characterName,
-            Bio = UiHelpers.Unwrap(draftBio, bioWrapWidth).Trim(),
-            HomeWorld = string.IsNullOrEmpty(characterName) ? State.MyProfile?.HomeWorld ?? string.Empty : characterWorld,
-        };
-
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                var updated = await GalleryClient
-                    .UpdateProfileAsync(submission, CancellationToken.None)
-                    .ConfigureAwait(false);
-
-                State.Adopt(updated);
-                State.RefreshProfile(force: true);
-                editing = false;
-            }
-            catch (Exception ex)
-            {
-                problem = ex.Message;
-            }
-            finally
-            {
-                saving = false;
-            }
-        });
-    }
-
-    /// Opens a file browser, then the cropper on whatever was chosen.
-    private void PickPicture(bool avatar)
-    {
-        problem = null;
-
-        var start = Screenshots.DirectoryExists
-            ? Screenshots.Directory
-            : Environment.GetFolderPath(Environment.SpecialFolder.MyPictures);
-
-        plugin.FileDialogs.OpenFileDialog(
-            avatar ? "Pick an avatar" : "Pick a banner",
-            "Images{.png,.jpg,.jpeg,.bmp,.webp}",
-            (chosen, paths) =>
-            {
-                if (!chosen || paths.Count == 0)
-                    return;
-
-                _ = cropper.OpenAsync(
-                    paths[0],
-                    avatar ? ImageProcessor.AvatarSize : ImageProcessor.BannerWidth,
-                    avatar ? ImageProcessor.AvatarSize : ImageProcessor.BannerHeight,
-                    avatar ? "Frame your avatar" : "Frame your banner",
-                    jpeg => UploadPicture(avatar, jpeg));
-            },
-            1,
-            start);
-    }
-
-    private void UploadPicture(bool avatar, byte[]? jpeg)
-    {
-        problem = null;
-
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                var updated = await GalleryClient
-                    .SetPictureAsync(avatar, jpeg, State.OwnerKey, CancellationToken.None)
-                    .ConfigureAwait(false);
-
-                State.Adopt(updated);
-                State.RefreshProfile(force: true);
-            }
-            catch (Exception ex)
-            {
-                problem = ex.Message;
-            }
-        });
-    }
-
-    private void ClearPicture(bool avatar) => UploadPicture(avatar, null);
-
-    private void DrawNotice(FontAwesomeIcon icon, string heading, string body)
-    {
-        var scale = UiHelpers.Scale;
-        var available = ImGui.GetContentRegionAvail();
-
-        ImGui.Dummy(new Vector2(0f, MathF.Max(20f * scale, (available.Y * 0.25f) - (40f * scale))));
-
-        var drawList = ImGui.GetWindowDrawList();
-        var centreX = ImGui.GetCursorScreenPos().X + (available.X / 2f);
-
-        using (plugin.Fonts.Icon.PushSafe())
-        {
-            var glyph = icon.ToIconString();
-            var font = ImGui.GetFont();
-            var glyphSize = 30f * scale;
-            var measured = ImGui.CalcTextSize(glyph) * (glyphSize / ImGui.GetFontSize());
-
-            drawList.AddText(
-                font, glyphSize,
-                new Vector2(centreX - (measured.X / 2f), ImGui.GetCursorScreenPos().Y),
-                ImGui.GetColorU32(Theme.AccentSoft), glyph, 0f);
-        }
-
-        ImGui.Dummy(new Vector2(0f, 40f * scale));
-
-        Centred(heading, Theme.Text);
-        ImGui.Dummy(new Vector2(0f, 4f * scale));
-        Centred(body, Theme.TextDim);
-    }
-
-    /// UVs that fill a rectangle with the largest centred piece of a source that fits it - CSS
-    /// background-size:cover, as texture coordinates.
-    private static (Vector2 Min, Vector2 Max) Cover(int sourceWidth, int sourceHeight, float width, float height)
-    {
-        var wanted = width / height;
-        var actual = (float)sourceWidth / sourceHeight;
-
-        var uv0 = Vector2.Zero;
-        var uv1 = Vector2.One;
-
-        if (actual > wanted)
-        {
-            var keep = wanted / actual;
-            uv0.X = (1f - keep) / 2f;
-            uv1.X = uv0.X + keep;
-        }
-        else if (actual < wanted)
-        {
-            var keep = actual / wanted;
-            uv0.Y = (1f - keep) / 2f;
-            uv1.Y = uv0.Y + keep;
-        }
-
-        return (uv0, uv1);
-    }
-
-    private static void Centred(string text, Vector4 colour)
-    {
-        var width = ImGui.CalcTextSize(text).X;
-        ImGui.SetCursorPosX(ImGui.GetCursorPosX() + MathF.Max(0f, (ImGui.GetContentRegionAvail().X - width) / 2f));
-        ImGui.TextColored(colour, text);
     }
 }
