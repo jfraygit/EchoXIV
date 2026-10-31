@@ -12,6 +12,17 @@ public static class ChangelogData
     /// not read", and lighting it up for a build that was never published teaches people to ignore it.
     public static readonly ChangelogEntry[] Entries =
     [
+        new("2.0.0.2",
+        [
+            new ChangelogGroup("Fixed",
+            [
+                "The window moved further to the right every time you restored it from the "
+                + "minimised box. It now comes back where you left it.",
+                "Dragging the minimised box a short way opened the window instead of only "
+                + "moving it.",
+            ]),
+        ]),
+
         new("2.0.0.1",
         [
             new ChangelogGroup("Added",

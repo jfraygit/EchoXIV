@@ -182,6 +182,15 @@ public sealed class MainWindow : Window
 
     private Vector2? minimisedPressAt;
 
+    /// Whether the pointer has travelled since the collapsed box was pressed.
+    private bool minimisedDragged;
+
+    /// Where the window's own top-left corner was this frame.
+    private Vector2 windowOrigin;
+
+    /// How far the pointer may travel during a press and still count as a click.
+    private static float MinimisedClickSlop => 2f * UiHelpers.Scale;
+
     public override void OnOpen() => animatedSize = TargetSize;
 
     /// Releases what the tabs hold.
@@ -318,9 +327,11 @@ public sealed class MainWindow : Window
             return;
         }
 
+        windowOrigin = ImGui.GetWindowPos();
+
         RememberPosition();
 
-        Modal.Frame(ImGui.GetWindowPos(), ImGui.GetWindowSize());
+        Modal.Frame(windowOrigin, ImGui.GetWindowSize());
 
 
 
@@ -472,7 +483,7 @@ public sealed class MainWindow : Window
         var body = Theme.Tinted(hovered ? 0.22f : 0.10f);
         drawList.AddRectFilled(min, max, ImGui.GetColorU32(body), 8f * scale);
 
-        var span = MathF.Max(1f, (Config.WindowWidth - MinimisedSize) * ImGuiHelpers.GlobalScale);
+        var span = MathF.Max(1f, (DesignSize.X - MinimisedSize) * ImGuiHelpers.GlobalScale);
         var collapsed = Math.Clamp(1f - ((size.X - (MinimisedSize * ImGuiHelpers.GlobalScale)) / span), 0f, 1f);
 
         using (plugin.Fonts.Icon.PushSafe())
@@ -498,15 +509,23 @@ public sealed class MainWindow : Window
             ImGui.SetTooltip("EchoGlam - click to expand, drag to move");
 
         if (hovered && ImGui.IsMouseClicked(ImGuiMouseButton.Left))
+        {
             minimisedPressAt = ImGui.GetMousePos();
+            minimisedDragged = false;
+        }
+
+        if (minimisedPressAt is { } pressedAt
+            && Vector2.Distance(pressedAt, ImGui.GetMousePos()) >= MinimisedClickSlop)
+            minimisedDragged = true;
 
         if (!ImGui.IsMouseReleased(ImGuiMouseButton.Left))
             return;
 
-        if (minimisedPressAt is { } pressed && Vector2.Distance(pressed, ImGui.GetMousePos()) < 4f && hovered)
+        if (minimisedPressAt is not null && !minimisedDragged && hovered)
             SetMinimised(false);
 
         minimisedPressAt = null;
+        minimisedDragged = false;
     }
 
     /// An accent border around the whole window, matching the collapsed box and the rest of the suite.
@@ -545,7 +564,7 @@ public sealed class MainWindow : Window
 
         targetPos = Config.FullWindowX > Configuration.UnsetPosition && Config.FullWindowY > Configuration.UnsetPosition
             ? new Vector2(Config.FullWindowX, Config.FullWindowY)
-            : animatedPos - ((new Vector2(Config.WindowWidth, Config.WindowHeight) - IntroSize) * ImGuiHelpers.GlobalScale / 2f);
+            : animatedPos - ((DesignSize - IntroSize) * ImGuiHelpers.GlobalScale / 2f);
 
         animatingPosition = true;
     }
@@ -559,7 +578,7 @@ public sealed class MainWindow : Window
 
         RememberPosition();
 
-        animatedPos = ImGui.GetWindowPos();
+        animatedPos = windowOrigin;
         minimised = value;
         Config.StartMinimised = value;
 
@@ -572,6 +591,14 @@ public sealed class MainWindow : Window
 
         animatingPosition = true;
         Config.Save();
+
+        if (Build.Diagnostics)
+        {
+            Plugin.Log.Information(
+                $"[EchoGlam] minimise={value} from={animatedPos} to={targetPos} "
+                + $"stored.full=({Config.FullWindowX},{Config.FullWindowY}) "
+                + $"stored.min=({Config.MinimisedX},{Config.MinimisedY})");
+        }
     }
 
     /// Eases the window toward the position belonging to the mode it's switching into.
@@ -596,6 +623,9 @@ public sealed class MainWindow : Window
             animatedPos = targetPos;
             Position = animatedPos;
             animatingPosition = false;
+
+            if (Build.Diagnostics)
+                Plugin.Log.Information($"[EchoGlam] settled minimised={minimised} at={animatedPos}");
         }
     }
 
@@ -605,7 +635,7 @@ public sealed class MainWindow : Window
         if (animatingPosition)
             return;
 
-        var pos = ImGui.GetWindowPos();
+        var pos = windowOrigin;
 
         if (minimised)
         {
