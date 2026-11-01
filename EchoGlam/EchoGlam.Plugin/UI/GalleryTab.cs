@@ -713,13 +713,22 @@ public sealed class GalleryTab : IDisposable
 
         var loop = stride * count;
 
+        var fits = (count * stride) - gap <= width;
+
+        if (fits)
+        {
+            showcaseOffset = 0f;
+            showcaseFling = 0f;
+            showcaseDragging = false;
+        }
+
         var delta = ImGui.GetIO().DeltaTime;
         var step = Anim.Step(delta);
 
-        if (!showcaseDragging && !ImGui.IsMouseHoveringRect(stripMin, stripMax))
+        if (!fits && !showcaseDragging && !ImGui.IsMouseHoveringRect(stripMin, stripMax))
             showcaseOffset += ShowcaseSpeed * UiHelpers.Scale * step;
 
-        if (!showcaseDragging)
+        if (!fits && !showcaseDragging)
         {
             if (MathF.Abs(showcaseFling) > FlingFloorDesign * UiHelpers.Scale)
             {
@@ -770,7 +779,8 @@ public sealed class GalleryTab : IDisposable
 
         var first = (int)MathF.Floor(showcaseOffset / stride);
         var shift = showcaseOffset - (first * stride);
-        var slots = (int)MathF.Ceiling(width / stride) + 1;
+
+        var slots = Math.Min(count - 1, (int)MathF.Ceiling(width / stride) + 1);
 
         for (var slot = 0; slot <= slots; slot++)
         {
@@ -792,13 +802,13 @@ public sealed class GalleryTab : IDisposable
                 Open(entry.Id);
             }
 
-            if (ImGui.IsItemActive())
+            if (!fits && ImGui.IsItemActive())
                 showcaseDragging = true;
 
             var hovered = ImGui.IsItemHovered()
                           && ImGui.IsMouseHoveringRect(min, min + size);
 
-            if (ImGui.IsItemHovered() || ImGui.IsItemActive())
+            if (!fits && (ImGui.IsItemHovered() || ImGui.IsItemActive()))
                 ImGui.SetMouseCursor(ImGuiMouseCursor.ResizeEw);
 
             Elev.Shadow(drawList, min, min + size, Elev.Float, Rad.Card, hovered ? 1.9f : 1f);
