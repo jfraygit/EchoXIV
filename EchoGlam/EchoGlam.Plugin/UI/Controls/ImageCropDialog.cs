@@ -197,7 +197,7 @@ public sealed class ImageCropDialog : IDisposable
         var footprintHeight = (size.X * MathF.Abs(sin)) + (size.Y * MathF.Abs(cos));
 
         var coverScale = MathF.Max(footprintWidth / sourceWidth, footprintHeight / sourceHeight)
-                         * ImageProcessor.CoverMargin;
+                         * ImageProcessor.CoverFactor(angle);
 
         var effective = coverScale * zoom;
 

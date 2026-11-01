@@ -1103,7 +1103,7 @@ public sealed class SubmitPane : IDisposable
 
     private void Browse()
     {
-        var start = Screenshots.DirectoryExists
+        var fallback = Screenshots.DirectoryExists
             ? Screenshots.Directory
             : Environment.GetFolderPath(Environment.SpecialFolder.MyPictures);
 
@@ -1112,11 +1112,15 @@ public sealed class SubmitPane : IDisposable
             "Images{.png,.jpg,.jpeg,.bmp,.webp}",
             (chosen, paths) =>
             {
-                if (chosen && paths.Count > 0)
-                    BeginCrop(paths[0]);
+                if (!chosen || paths.Count == 0)
+                    return;
+
+                plugin.Configuration.RememberBrowseDirectory(paths[0]);
+
+                BeginCrop(paths[0]);
             },
             1,
-            start);
+            plugin.Configuration.BrowseStartDirectory(fallback));
     }
 
     private void BeginCrop(string path)

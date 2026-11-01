@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Numerics;
 using Dalamud.Configuration;
 
@@ -100,6 +101,28 @@ public sealed class Configuration : IPluginConfiguration
         if (!FavouriteItems.Remove(itemId))
             FavouriteItems.Add(itemId);
 
+        Save();
+    }
+
+    /// The folder the last picture was picked from, so Browse opens where it left off.
+    public string? LastBrowseDirectory { get; set; }
+
+    /// Where a Browse should open: where they were last, the game's shots if they have never browsed, and
+    /// their pictures folder if that does not exist either.
+    public string BrowseStartDirectory(string fallback) =>
+        !string.IsNullOrEmpty(LastBrowseDirectory) && Directory.Exists(LastBrowseDirectory)
+            ? LastBrowseDirectory
+            : fallback;
+
+    /// Records the folder a picked file came from.
+    public void RememberBrowseDirectory(string pickedFile)
+    {
+        var folder = Path.GetDirectoryName(pickedFile);
+
+        if (string.IsNullOrEmpty(folder) || folder == LastBrowseDirectory)
+            return;
+
+        LastBrowseDirectory = folder;
         Save();
     }
 

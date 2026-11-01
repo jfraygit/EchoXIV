@@ -797,7 +797,7 @@ public sealed class ProfileTab : IDisposable
     {
         problem = null;
 
-        var start = Screenshots.DirectoryExists
+        var fallback = Screenshots.DirectoryExists
             ? Screenshots.Directory
             : Environment.GetFolderPath(Environment.SpecialFolder.MyPictures);
 
@@ -809,6 +809,8 @@ public sealed class ProfileTab : IDisposable
                 if (!chosen || paths.Count == 0)
                     return;
 
+                plugin.Configuration.RememberBrowseDirectory(paths[0]);
+
                 _ = cropper.OpenAsync(
                     paths[0],
                     ImageProcessor.AvatarSize, ImageProcessor.AvatarSize,
@@ -816,7 +818,7 @@ public sealed class ProfileTab : IDisposable
                     SetPicture);
             },
             1,
-            start);
+            plugin.Configuration.BrowseStartDirectory(fallback));
     }
 
     /// Sends a new picture, or null to take the current one off.

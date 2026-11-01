@@ -782,12 +782,15 @@ public sealed class GalleryTab : IDisposable
 
         var slots = Math.Min(count - 1, (int)MathF.Ceiling(width / stride) + 1);
 
+        var content = (count * stride) - gap;
+        var lead = fits ? MathF.Max(0f, (width - content) / 2f) : 0f;
+
         for (var slot = 0; slot <= slots; slot++)
         {
             var index = (((first + slot) % count) + count) % count;
             var entry = top.Entries[index];
 
-            var min = new Vector2(origin.X + (slot * stride) - shift, top0);
+            var min = new Vector2(origin.X + lead + (slot * stride) - shift, top0);
             var size = new Vector2(card, height);
 
             var hitMin = new Vector2(min.X - (gap / 2f), min.Y);

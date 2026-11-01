@@ -36,6 +36,13 @@ public static class ImageProcessor
     /// Crops and encodes, at a chosen position and zoom within the cover-scaled source.
     internal const float CoverMargin = 1.003f;
 
+    /// Extra cover, as a fraction, at a right angle - scaled down by how far the picture is actually turned.
+    internal const float RotatedPanRoom = 0.22f;
+
+    /// What the cover is multiplied by.
+    internal static float CoverFactor(float degrees) =>
+        CoverMargin + (RotatedPanRoom * MathF.Abs(MathF.Sin(degrees * MathF.PI / 180f)));
+
     /// degrees turns the picture clockwise, any angle.
     public static byte[] ToJpeg(
         string sourcePath, int targetWidth, int targetHeight, float panX = 0.5f, float panY = 0.5f,
@@ -66,7 +73,7 @@ public static class ImageProcessor
         var footprintHeight = (targetWidth * sin) + (targetHeight * cos);
 
         var cover = MathF.Max(footprintWidth / original.Width, footprintHeight / original.Height)
-                    * CoverMargin;
+                    * CoverFactor(degrees);
 
         var effective = cover * MathF.Max(1f, zoom);
 
