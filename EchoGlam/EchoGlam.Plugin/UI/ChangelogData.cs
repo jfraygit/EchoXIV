@@ -12,6 +12,20 @@ public static class ChangelogData
     /// not read", and lighting it up for a build that was never published teaches people to ignore it.
     public static readonly ChangelogEntry[] Entries =
     [
+        new("2.0.0.3",
+        [
+            new ChangelogGroup("Added",
+            [
+                "Middle-click a piece of gear to make it a favourite. Your favourites sit "
+                + "together at the top of the list instead of among the rest.",
+            ]),
+            new ChangelogGroup("Changed",
+            [
+                "The opening animation now plays when EchoGlam reopens as the collapsed box, and "
+                + "settles into it rather than being skipped.",
+            ]),
+        ]),
+
         new("2.0.0.2",
         [
             new ChangelogGroup("Fixed",

@@ -88,6 +88,21 @@ public sealed class Configuration : IPluginConfiguration
         Save();
     }
 
+    /// Item ids the player has starred in the picker, in no particular order.
+    public List<uint> FavouriteItems { get; set; } = [];
+
+    public bool IsFavouriteItem(uint itemId) => FavouriteItems.Contains(itemId);
+
+    /// Stars or unstars an item and saves, for the reason given on ToggleFavouriteDye: a one-click action
+    /// with no confirming step has to write on the click.
+    public void ToggleFavouriteItem(uint itemId)
+    {
+        if (!FavouriteItems.Remove(itemId))
+            FavouriteItems.Add(itemId);
+
+        Save();
+    }
+
     /// This installation's identity on the relay.
     public string OwnerKey { get; set; } = string.Empty;
 

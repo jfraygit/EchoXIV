@@ -38,7 +38,7 @@ public sealed class DressingRoomTab
     private readonly record struct FilterKey(
         GlamSlot Slot, string Search, uint Job, bool Owned,
         bool HideStore, bool HideSeasonal, bool HideExclusive,
-        int OwnedVersion, bool CatalogueReady);
+        int OwnedVersion, bool CatalogueReady, int FavouritesVersion);
 
     private FilterKey lastFilter;
     private bool filterValid;
@@ -46,7 +46,18 @@ public sealed class DressingRoomTab
     private FilterKey CurrentFilter => new(
         selectedSlot, search, selectedJob ?? 0u, ownedOnly,
         hideStore, hideSeasonal, hideExclusive,
-        plugin.Owned.Version, Items.Ready);
+        plugin.Owned.Version, Items.Ready, favouritesVersion);
+
+    /// Bumped on every star and unstar, and in the filter key above for exactly the reason the key exists at
+    /// all.
+    private int favouritesVersion;
+
+    /// Stars or unstars an item and makes the picker notice.
+    private void ToggleFavouriteItem(uint itemId)
+    {
+        plugin.Configuration.ToggleFavouriteItem(itemId);
+        favouritesVersion++;
+    }
 
     private void RefreshMatches()
     {
@@ -58,7 +69,20 @@ public sealed class DressingRoomTab
         lastFilter = key;
         filterValid = true;
         matches = Matches(out hiddenBySource);
+
+        favouriteMatches = matches.Where(i => plugin.Configuration.IsFavouriteItem(i.ItemId)).ToList();
+
+        gridMatches = favouriteMatches.Count == 0
+            ? matches
+            : matches.Where(i => !plugin.Configuration.IsFavouriteItem(i.ItemId)).ToList();
     }
+
+    /// This frame's starred items, and everything else, from the same pass.
+    private List<GlamItem> favouriteMatches = [];
+
+    /// The same list as matches while nothing is starred, deliberately - allocating a copy of a few thousand
+    /// items to remove none of them is the common case.
+    private List<GlamItem> gridMatches = [];
 
     private int hiddenBySource;
 
@@ -1372,7 +1396,7 @@ public sealed class DressingRoomTab
 
         var available = ImGui.GetContentRegionAvail().X;
         var columns = Math.Max(1, (int)((available + gap) / (cell + gap)));
-        var rows = (matches.Count + columns - 1) / columns;
+        var rows = (gridMatches.Count + columns - 1) / columns;
 
         var entry = Wardrobe.EntryFor(selectedSlot);
         var currentId = entry?.ItemId ?? uint.MaxValue;
@@ -1381,6 +1405,31 @@ public sealed class DressingRoomTab
 
         var nameLine = Text.CaptionSize * 1.25f;
         var rowHeight = cell + nameLine + gap;
+
+        if (favouriteMatches.Count > 0)
+        {
+            using (Text.PushCaption())
+                ImGui.TextColored(Theme.TextDim, "Favourites");
+
+            ImGui.Dummy(new Vector2(0f, Sp.Xs));
+
+            for (var i = 0; i < favouriteMatches.Count; i++)
+            {
+                if (i % columns != 0)
+                    ImGui.SameLine(0f, gap);
+
+                DrawItemCell(drawList, favouriteMatches[i], cell, iconSize, currentId);
+            }
+
+            ImGui.Dummy(new Vector2(0f, Sp.Sm));
+
+            var ruleTop = ImGui.GetCursorScreenPos();
+            drawList.AddRectFilled(
+                ruleTop, new Vector2(ruleTop.X + available, ruleTop.Y + Stroke.Hair),
+                Col.U32(Theme.Border with { W = Theme.Border.W * 0.7f }));
+
+            ImGui.Dummy(new Vector2(0f, Sp.Md));
+        }
 
         var clipper = new ImGuiListClipper();
         clipper.Begin(rows, rowHeight);
@@ -1392,13 +1441,13 @@ public sealed class DressingRoomTab
                 for (var column = 0; column < columns; column++)
                 {
                     var index = (row * columns) + column;
-                    if (index >= matches.Count)
+                    if (index >= gridMatches.Count)
                         break;
 
                     if (column > 0)
                         ImGui.SameLine(0f, gap);
 
-                    DrawItemCell(drawList, matches[index], cell, iconSize, currentId);
+                    DrawItemCell(drawList, gridMatches[index], cell, iconSize, currentId);
                 }
             }
         }
@@ -1424,6 +1473,9 @@ public sealed class DressingRoomTab
             Wardrobe.Set(selectedSlot, item.ItemId, stain0, stain1);
         }
 
+        if (hovered && ImGui.IsMouseClicked(ImGuiMouseButton.Middle))
+            ToggleFavouriteItem(item.ItemId);
+
         if (hovered && ImGui.IsMouseClicked(ImGuiMouseButton.Right))
         {
             var (stain0, stain1) = StainsFor(item);
@@ -1438,8 +1490,14 @@ public sealed class DressingRoomTab
             hoveredCell = item;
             hoveredCellFrame = ImGui.GetFrameCount();
 
-            if (item.IsDyeable)
-                UiHelpers.WrappedTooltip("Right-click to wear it and pick its dyes.");
+            var starred = plugin.Configuration.IsFavouriteItem(item.ItemId);
+            var favourite = starred
+                ? "Middle-click to remove it from your favourites."
+                : "Middle-click to add it to your favourites.";
+
+            UiHelpers.WrappedTooltip(item.IsDyeable
+                ? $"Right-click to wear it and pick its dyes.\n{favourite}"
+                : favourite);
         }
 
         var max = origin + new Vector2(cell, cell);

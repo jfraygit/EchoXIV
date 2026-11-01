@@ -143,7 +143,7 @@ public sealed class MainWindow : Window
 
         minimised = Config.StartMinimised;
 
-        introRunning = !minimised;
+        introRunning = true;
 
         animatedSize = TargetSize;
 
@@ -562,9 +562,12 @@ public sealed class MainWindow : Window
         animatedSize = IntroSize;
         animatedPos = ImGui.GetWindowPos();
 
-        targetPos = Config.FullWindowX > Configuration.UnsetPosition && Config.FullWindowY > Configuration.UnsetPosition
-            ? new Vector2(Config.FullWindowX, Config.FullWindowY)
-            : animatedPos - ((DesignSize - IntroSize) * ImGuiHelpers.GlobalScale / 2f);
+        var savedX = minimised ? Config.MinimisedX : Config.FullWindowX;
+        var savedY = minimised ? Config.MinimisedY : Config.FullWindowY;
+
+        targetPos = savedX > Configuration.UnsetPosition && savedY > Configuration.UnsetPosition
+            ? new Vector2(savedX, savedY)
+            : animatedPos - ((TargetSize - IntroSize) * ImGuiHelpers.GlobalScale / 2f);
 
         animatingPosition = true;
     }
