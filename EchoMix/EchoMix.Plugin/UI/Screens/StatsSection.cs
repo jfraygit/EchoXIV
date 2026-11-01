@@ -342,19 +342,21 @@ public sealed class StatsSection
         var texture = plugin.DjDeckWindow.DjAvatarImage(entry.ProfileId, avatarBase64);
         var box = new Vector2(size, size);
 
+        var rounding = size * 0.5f;
+
         if (texture != null)
         {
             drawList.AddImageRounded(texture.Handle, pos, pos + box, Vector2.Zero, Vector2.One,
-                ImGui.GetColorU32(Vector4.One), Metrics.RadiusSharp);
+                ImGui.GetColorU32(Vector4.One), rounding);
         }
         else
         {
-            drawList.AddRectFilled(pos, pos + box, ImGui.GetColorU32(Elevation.Sunken), Metrics.RadiusSharp);
+            drawList.AddRectFilled(pos, pos + box, ImGui.GetColorU32(Elevation.Sunken), rounding);
         }
 
-        drawList.AddRect(pos, pos + box,
+        drawList.AddCircle(Chrome.Snap(pos + (box * 0.5f)), rounding,
             ImGui.GetColorU32(Semantic.Alpha(new Vector4(entry.FrameColorR, entry.FrameColorG, entry.FrameColorB, 1f), 0.6f)),
-            Metrics.RadiusSharp, ImDrawFlags.None, Metrics.Hairline);
+            0, Metrics.Hairline);
     }
 
     /// Seconds render as a duration, everything else as a plain count.

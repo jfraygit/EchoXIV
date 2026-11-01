@@ -166,12 +166,12 @@ public sealed class DjDeckWindow : Window, IDisposable
     /// one actually renders.
     private static readonly string[] DjFrameStyleOptions =
     {
-        "Solid", "Dashed", "Dotted", "Double", "Corners", "Gradient", "Glow", "Ticks", "Chain", "Brackets", "Stitch", "Blocks",        "Pulse", "Chase", "Spin", "Rainbow", "Sparkle", "Sentry", "Anchor", "Pendulum", "Glitch", "Confetti",    };
+        "Solid", "Dashed", "Dotted", "Double", "Corners", "Gradient", "Glow", "Ticks", "Chain", "Brackets", "Stitch", "Blocks",        "Pulse", "Chase", "Spin", "Rainbow", "Sparkle", "Sentry", "Anchor", "Pendulum", "Glitch", "Confetti",        "Comet", "Orbit", "Ripple", "Scanner", "Fireflies", "Morse", "Twin", "Tide", "Static", "Aurora",    };
 
     /// The DJ name's own text-effect options on the profile detail page - see DrawDjName.
     private static readonly string[] DjNameEffectOptions =
     {
-        "None", "Gradient", "Glow", "Outline", "Underline", "Embossed", "Split",        "Pulse", "Rainbow", "Wave", "Shimmer", "Chase", "Flicker", "Typewriter", "Marquee", "Glitch", "Cascade", "Heatwave", "Blink",    };
+        "None", "Gradient", "Glow", "Outline", "Underline", "Embossed", "Split",        "Pulse", "Rainbow", "Wave", "Shimmer", "Chase", "Flicker", "Typewriter", "Marquee", "Glitch", "Cascade", "Heatwave", "Blink",        "Neon", "Scanline", "Drift", "Bob", "Sheen", "Echo", "Prism", "Ember", "Sonar", "Stencil",    };
 
     private ref string? editingDjProfileId => ref plugin.EditState.EditingDjProfileId;
 
@@ -340,6 +340,8 @@ public sealed class DjDeckWindow : Window, IDisposable
     /// letting the GC eventually get to it.
     public void Dispose()
     {
+        imageCropDialog.Dispose();
+
         showImagePreview?.Dispose();
 
         lock (publicShowImageGate)
@@ -2181,12 +2183,11 @@ public sealed class DjDeckWindow : Window, IDisposable
     /// draws either way.
     private void DrawDjProfileAvatar(string cacheKey, string? avatarBase64, float size, Vector4 frameColor, string frameStyle, IDalamudTextureWrap? overrideTexture = null)
     {
-        const float frameRounding = 8f;
         var avatarSize = new Vector2(size, size);
         var drawList = ImGui.GetWindowDrawList();
         var origin = ImGui.GetCursorScreenPos();
 
-        var imageRounding = IsSquareCorneredFrameStyle(frameStyle) ? 0f : frameRounding;
+        var imageRounding = size * 0.5f;
 
         for (var i = 3; i >= 1; i--)
         {
@@ -2236,13 +2237,12 @@ public sealed class DjDeckWindow : Window, IDisposable
             ImGui.Dummy(avatarSize);
         }
 
-        DrawAvatarFrame(drawList, origin, avatarSize, frameRounding, frameColor, frameStyle);
+        DrawAvatarFrame(drawList, origin, avatarSize, imageRounding, frameColor, frameStyle);
     }
 
     /// The two frame styles whose stroke geometry is fundamentally sharp-cornered by design (see
     /// DrawAvatarFrame) rather than just happening to look that way - everything else (including an
     /// unrecognized/blank style, which falls back to Solid) is rounded.
-    private static bool IsSquareCorneredFrameStyle(string style) => style is "Corners" or "Gradient" or "Brackets" or "Sentry";
 
 
     private void DrawAvatarFrame(ImDrawListPtr drawList, Vector2 origin, Vector2 size, float rounding, Vector4 color, string style)
@@ -4682,6 +4682,31 @@ public sealed class DjDeckWindow : Window, IDisposable
         {
             Theme.Pop(themeColors);
         }
+    }
+
+    /// The DJ-profile report's send/ack state, for 2.0's own dialog (UI/Screens/ReportProfileDialog).
+    public bool DjProfileReportSending => djProfileReportSending;
+
+    public DjProfileReportAckMessage? DjProfileReportResult => djProfileReportSendResult;
+
+    public void ClearDjProfileReportResult() => djProfileReportSendResult = null;
+
+    /// Refuses locally, without a round trip.
+    public void RejectDjProfileReport(string message) =>
+        djProfileReportSendResult = new DjProfileReportAckMessage { Accepted = false, Error = message };
+
+    /// Sends a report.
+    public void SubmitDjProfileReport(string profileId, string reason)
+    {
+        djProfileReportSending = true;
+        djProfileReportSendResult = null;
+
+        plugin.AudioHostClient.Send(MessageType.ReportDjProfile, new SubmitDjProfileReportMessage
+        {
+            ProfileId = profileId,
+            Reason = reason.Trim(),
+            ReporterCharacterName = Plugin.ObjectTable.LocalPlayer?.Name.TextValue ?? string.Empty,
+        });
     }
 
 

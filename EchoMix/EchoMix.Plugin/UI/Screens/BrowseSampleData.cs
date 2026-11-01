@@ -256,7 +256,7 @@ internal static class BrowseSampleData
             });
         }
 
-        var monthlyAwardedAt = new DateTime(2026, 10, 1, 12, 0, 0, DateTimeKind.Utc);
+        var monthlyAwardedAt = new DateTime(2026, 10, 31, 12, 0, 0, DateTimeKind.Utc);
         if (seed % 3 == 0)
         {
             badges.Add(new DjBadgeDto

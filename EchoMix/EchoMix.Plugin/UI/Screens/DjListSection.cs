@@ -71,6 +71,8 @@ public sealed class DjListSection
 
         if (viewingProfileId is { } open)
         {
+            plugin.ShellWindow.HoldRailCollapsed();
+
             if (!profileSection.Draw(open, isSample))
                 viewingProfileId = null;
 
@@ -316,7 +318,8 @@ public sealed class DjListSection
         ImGui.SetCursorScreenPos(new Vector2(centreX - (nameWidth * 0.5f), y));
         DrawCosmeticName(profile, textWidth, shownName);
 
-        y += TypeScale.Measure(TypeScale.Heading, "Ag").Y + Metrics.Xs;
+        y += TypeScale.Measure(TypeScale.Heading, "Ag").Y + Metrics.Xs
+            + DjCosmetics.NameEffectDescent(profile.NameEffect, Metrics.Scale);
 
         var subtitle = UiHelpers.JoinCapped(
             profile.Genres.Select(DjDeckWindow.TitleCaseGenre).ToList(), 2);
@@ -690,7 +693,8 @@ public sealed class DjListSection
     {
         var texture = plugin.DjDeckWindow.DjAvatarImage(profile.Id, profile.AvatarBase64);
         var box = new Vector2(size, size);
-        var rounding = Metrics.RadiusSoft;
+
+        var rounding = size * 0.5f;
 
         if (texture != null)
         {

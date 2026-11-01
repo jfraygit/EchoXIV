@@ -23,6 +23,10 @@ public static class Fields
     private static readonly Dictionary<string, float> SegmentMarkers = new();
     private static readonly Dictionary<string, float> ButtonHovers = new();
 
+    /// Press is tracked separately from hover because the two are different gestures that happen to share a
+    /// control.
+    private static readonly Dictionary<string, float> ButtonPresses = new();
+
     public readonly record struct Row(
         Vector2 ControlMin,
         float ControlWidth,
@@ -826,7 +830,8 @@ public static class Fields
         FontAwesomeIcon? icon = null,
         float? height = null,
         string? idSuffix = null,
-        Vector4? toggleAccent = null)
+        Vector4? toggleAccent = null,
+        bool pill = false)
     {
         var key = idSuffix == null ? label : $"{label}#{idSuffix}";
         var boxHeight = MathF.Round(height ?? Metrics.ControlLg);
@@ -852,20 +857,17 @@ public static class Fields
         hover = Motion.Approach(hover, held ? 1f : hovered ? 0.5f : 0f, Motion.SpeedFast);
         ButtonHovers[key] = hover;
 
+        var press = ButtonPresses.TryGetValue(key, out var p) ? p : 0f;
+        press = Motion.Approach(press, held ? 1f : 0f, Motion.SpeedInstant);
+        ButtonPresses[key] = press;
+
         var accent = toggleAccent ?? Semantic.Primary;
 
-        var (baseFill, baseBorder, baseText) = style switch
-        {
-            ButtonStyle.Primary => (Semantic.Primary, Semantic.Alpha(Semantic.Primary, 0f), Semantic.TextOnAccent),
-            ButtonStyle.Danger => (Semantic.Alpha(Semantic.Danger, 0.16f), Semantic.Alpha(Semantic.Danger, 0.55f), Semantic.Danger),
-            ButtonStyle.Toggled => (Semantic.Alpha(accent, 0.2f), Semantic.Alpha(accent, 0.7f), accent),
-            _ => (Elevation.Raised, Elevation.LineStrong, Semantic.TextPrimary),
-        };
-
         Vector4 fill, border, text;
+
         if (!enabled)
         {
-            fill = Elevation.Sunken;
+            fill = Semantic.Alpha(Vector4.One, 0.02f);
             border = Elevation.Line;
             text = Semantic.TextDisabled;
         }
@@ -873,36 +875,39 @@ public static class Fields
         {
             fill = style switch
             {
-                ButtonStyle.Primary => Semantic.Lift(baseFill, 0.14f * hover),
-                ButtonStyle.Danger => Semantic.Alpha(Semantic.Danger, 0.16f + (0.18f * hover)),
-                ButtonStyle.Toggled => Semantic.Alpha(accent, 0.2f + (0.16f * hover)),
-                _ => Vector4.Lerp(baseFill, Elevation.Overlay, hover),
+                ButtonStyle.Primary => Semantic.Lift(Semantic.Primary, 0.12f * hover),
+                ButtonStyle.Danger => Semantic.Alpha(Semantic.Danger, 0.07f + (0.11f * hover)),
+                ButtonStyle.Toggled => Semantic.Alpha(accent, 0.13f + (0.11f * hover)),
+                _ => Semantic.Alpha(Vector4.One, 0.04f + (0.06f * hover)),
             };
+
             border = style switch
             {
-                ButtonStyle.Primary => baseBorder,
-                ButtonStyle.Danger => Semantic.Alpha(Semantic.Danger, 0.55f + (0.35f * hover)),
-                ButtonStyle.Toggled => Semantic.Alpha(accent, 0.7f + (0.3f * hover)),
-                _ => Vector4.Lerp(baseBorder, Semantic.Alpha(Semantic.Primary, 0.6f), hover),
+                ButtonStyle.Primary => Semantic.Alpha(Semantic.Primary, 0f),
+                ButtonStyle.Danger => Semantic.Alpha(Semantic.Danger, 0.45f + (0.4f * hover)),
+                ButtonStyle.Toggled => Semantic.Alpha(accent, 0.6f + (0.4f * hover)),
+                _ => Vector4.Lerp(Elevation.LineStrong, Semantic.Alpha(Semantic.TextPrimary, 0.4f), hover),
             };
-            text = baseText;
+
+            text = style switch
+            {
+                ButtonStyle.Primary => Semantic.TextOnAccent,
+                ButtonStyle.Danger => Semantic.Danger,
+                ButtonStyle.Toggled => accent,
+                _ => Vector4.Lerp(Semantic.TextSecondary, Semantic.TextPrimary, hover),
+            };
         }
 
-        var sink = MathF.Round(hover > 0.75f ? 1f * Metrics.Scale : 0f);
-        var min = origin + new Vector2(0f, sink);
+        var sink = MathF.Round(press * Metrics.Scale);
+        var min = Chrome.Snap(origin + new Vector2(0f, sink));
         var max = min + new Vector2(boxWidth, boxHeight);
-        var radius = Metrics.RadiusSoft;
+        var radius = pill ? Metrics.Pill(boxHeight) : Metrics.RadiusSoft;
 
         var drawList = ImGui.GetWindowDrawList();
-        if (enabled)
-        {
-            drawList.AddRectFilled(
-                origin + new Vector2(0f, 2f * Metrics.Scale),
-                origin + new Vector2(boxWidth, boxHeight + (2f * Metrics.Scale)),
-                ImGui.GetColorU32(Semantic.Alpha(Vector4.Zero, 0.28f)), radius);
-        }
 
-        drawList.AddRectFilled(min, max, ImGui.GetColorU32(fill), radius);
+        if (fill.W > 0.001f)
+            drawList.AddRectFilled(min, max, ImGui.GetColorU32(fill), radius);
+
         if (border.W > 0.001f)
             drawList.AddRect(min, max, ImGui.GetColorU32(border), radius, ImDrawFlags.None, Metrics.Hairline);
 

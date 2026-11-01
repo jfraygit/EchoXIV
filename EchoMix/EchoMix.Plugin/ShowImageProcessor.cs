@@ -40,41 +40,58 @@ public static class ShowImageProcessor
     /// Same as the panX/panY overload, but at a caller-chosen zoom level too - see ImageCropDialog, whose own
     /// zoom is a magnification factor on top of "cover" (1 reproduces the cover-fit crop exactly, matching
     /// the dialog's own MinZoom).
-    public static byte[] ProcessToJpeg(string sourcePath, int targetWidth, int targetHeight, float panX, float panY, float zoom)
+    public static byte[] ProcessToJpeg(string sourcePath, int targetWidth, int targetHeight, float panX, float panY, float zoom) =>
+        ProcessToJpeg(sourcePath, targetWidth, targetHeight, panX, panY, zoom, 0f);
+
+    /// A hair more zoom than the geometry strictly asks for.
+    internal const float CoverMargin = 1.003f;
+
+    /// Extra cover at a right angle, scaled by how far the picture is actually turned.
+    internal const float RotatedPanRoom = 0.22f;
+
+    /// What the cover is multiplied by.
+    internal static float CoverFactor(float degrees) =>
+        CoverMargin + (RotatedPanRoom * MathF.Abs(MathF.Sin(degrees * MathF.PI / 180f)));
+
+    /// Crops, rotates and encodes in one resampling pass.
+    public static byte[] ProcessToJpeg(
+        string sourcePath, int targetWidth, int targetHeight, float panX, float panY, float zoom, float degrees)
     {
         using var original = new Bitmap(sourcePath);
 
-        var targetAspect = targetWidth / (float)targetHeight;
-        var sourceAspect = original.Width / (float)original.Height;
+        var radians = degrees * MathF.PI / 180f;
+        var cos = MathF.Abs(MathF.Cos(radians));
+        var sin = MathF.Abs(MathF.Sin(radians));
 
-        int cropWidth, cropHeight;
-        if (sourceAspect > targetAspect)
-        {
-            cropHeight = original.Height;
-            cropWidth = (int)(cropHeight * targetAspect);
-        }
-        else
-        {
-            cropWidth = original.Width;
-            cropHeight = (int)(cropWidth / targetAspect);
-        }
+        var footprintWidth = (targetWidth * cos) + (targetHeight * sin);
+        var footprintHeight = (targetWidth * sin) + (targetHeight * cos);
 
-        var effectiveZoom = MathF.Max(1f, zoom);
-        cropWidth = Math.Max(1, (int)(cropWidth / effectiveZoom));
-        cropHeight = Math.Max(1, (int)(cropHeight / effectiveZoom));
+        var cover = MathF.Max(footprintWidth / original.Width, footprintHeight / original.Height)
+                    * CoverFactor(degrees);
 
-        var maxOffsetX = original.Width - cropWidth;
-        var maxOffsetY = original.Height - cropHeight;
-        var cropX = (int)(Math.Clamp(panX, 0f, 1f) * maxOffsetX);
-        var cropY = (int)(Math.Clamp(panY, 0f, 1f) * maxOffsetY);
-        var cropRect = new Rectangle(cropX, cropY, cropWidth, cropHeight);
+        var effective = cover * MathF.Max(1f, zoom);
+
+        var scaledWidth = original.Width * effective;
+        var scaledHeight = original.Height * effective;
+
+        var offsetX = (Math.Clamp(panX, 0f, 1f) - 0.5f) * MathF.Max(0f, scaledWidth - footprintWidth);
+        var offsetY = (Math.Clamp(panY, 0f, 1f) - 0.5f) * MathF.Max(0f, scaledHeight - footprintHeight);
 
         using var resized = new Bitmap(targetWidth, targetHeight);
+
         using (var g = Graphics.FromImage(resized))
         {
             g.InterpolationMode = InterpolationMode.HighQualityBicubic;
             g.SmoothingMode = SmoothingMode.HighQuality;
-            g.DrawImage(original, new Rectangle(0, 0, targetWidth, targetHeight), cropRect, GraphicsUnit.Pixel);
+            g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+
+            g.Clear(Color.Black);
+
+            g.TranslateTransform(targetWidth / 2f, targetHeight / 2f);
+            g.RotateTransform(degrees);
+            g.TranslateTransform(-offsetX, -offsetY);
+
+            g.DrawImage(original, new RectangleF(-scaledWidth / 2f, -scaledHeight / 2f, scaledWidth, scaledHeight));
         }
 
         using var stream = new MemoryStream();
@@ -83,5 +100,19 @@ public static class ShowImageProcessor
         encoderParams.Param[0] = new EncoderParameter(Encoder.Quality, JpegQuality);
         resized.Save(stream, jpegEncoder, encoderParams);
         return stream.ToArray();
+    }
+
+    /// The source's pixel dimensions, or null when it is not an image this can open.
+    public static (int Width, int Height)? Measure(string path)
+    {
+        try
+        {
+            using var image = Image.FromFile(path);
+            return (image.Width, image.Height);
+        }
+        catch
+        {
+            return null;
+        }
     }
 }

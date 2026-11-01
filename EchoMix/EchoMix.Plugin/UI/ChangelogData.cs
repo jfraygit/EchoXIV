@@ -12,6 +12,30 @@ public static class ChangelogData
 {
     public static readonly ChangelogEntry[] Entries =
     {
+        new("2.0.1.1", new[]
+        {
+            new ChangelogGroup("Added", new[]
+            {
+                "A Listen button on a DJ's profile while they are live, so you can join from there instead of going back to Live Shows.",
+                "Ten more avatar frame styles and ten more name effects for your DJ listing.",
+                "Positioning a picture now lets you turn it to any angle, with a grid to line it up against and a button to put it back.",
+                "Deleting your DJ listing now asks first, and tells you what goes with it.",
+            }),
+            new ChangelogGroup("Changed", new[]
+            {
+                "The DJ profile page has been rebuilt around the banner and picture, with the numbers moved up near the top.",
+                "Avatars are shown as a circle everywhere, including while you are positioning your own.",
+                "The Report This Profile window has been redone to match the rest of the plugin.",
+                "The side menu folds away while you are reading a DJ profile, and comes back when you leave it.",
+                "A monthly placing badge is dated the last day of the month it was won in, rather than the first.",
+            }),
+            new ChangelogGroup("Fixed", new[]
+            {
+                "The days a DJ is usually on were each labelled with the day before, so a DJ who played Sundays looked like they played Mondays.",
+                "/emix did not open the decks if you had picked Listener, which left no way back to them.",
+                "The Underline name effect sat on top of the line underneath it.",
+            }),
+        }),
         new("2.0.1.0", new[]
         {
             new ChangelogGroup("Added", new[]

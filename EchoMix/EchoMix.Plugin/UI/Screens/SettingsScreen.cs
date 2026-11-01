@@ -148,6 +148,13 @@ public sealed class SettingsScreen
             config.Save();
         }
 
+        var badgeAlign = BadgeAlignTool.Enabled;
+        if (Fields.Switch("##v2BadgeAlign", "Badge Alignment Tool", ref badgeAlign,
+                "Adds X/Y/size sliders under a DJ profile's badge shelf, and prints the catalogue values to bake the result in."))
+        {
+            BadgeAlignTool.Enabled = badgeAlign;
+        }
+
         Fields.Divider();
 
         var row = Fields.BeginRow("##v2ReplayNote", "Replay the 2.0 Note",

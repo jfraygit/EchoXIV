@@ -9,6 +9,23 @@ public static class DjCosmetics
 {
     /// Renders whichever frame style the profile's owner picked - see the individual case blocks below for
     /// each one's mechanics.
+    private static void StrokeSpan(
+        ImDrawListPtr drawList, Vector2 min, Vector2 size, float r,
+        float fromT, float toT, uint color, float thickness, int segments = 14)
+    {
+        for (var i = 0; i < segments; i++)
+        {
+            var p0 = Theme.RoundedRectPerimeterPoint(min, size, r, fromT + ((toT - fromT) * (i / (float)segments)));
+            var p1 = Theme.RoundedRectPerimeterPoint(min, size, r, fromT + ((toT - fromT) * ((i + 1f) / segments)));
+
+            drawList.AddLine(p0, p1, color, thickness);
+
+            drawList.AddCircleFilled(p1, thickness * 0.5f, color);
+        }
+    }
+
+    /// `rounding` of half the shorter side makes this a circle, which is what every avatar in the plugin now
+    /// passes.
     public static void DrawAvatarFrame(
         ImDrawListPtr drawList,
         Vector2 origin,
@@ -61,32 +78,36 @@ public static class DjCosmetics
 
             case "Corners":
             {
-                var armLength = MathF.Min(outerSize.X, outerSize.Y) * 0.22f;
-                void DrawCorner(Vector2 corner, Vector2 dirX, Vector2 dirY)
-                {
-                    drawList.AddLine(corner, corner + (dirX * armLength), col, thickness);
-                    drawList.AddLine(corner, corner + (dirY * armLength), col, thickness);
-                }
+                const float armSpan = 0.055f;
+                Span<float> cornerT = [0.125f, 0.375f, 0.625f, 0.875f];
 
-                DrawCorner(outerMin, new Vector2(1f, 0f), new Vector2(0f, 1f));
-                DrawCorner(new Vector2(outerMax.X, outerMin.Y), new Vector2(-1f, 0f), new Vector2(0f, 1f));
-                DrawCorner(outerMax, new Vector2(-1f, 0f), new Vector2(0f, -1f));
-                DrawCorner(new Vector2(outerMin.X, outerMax.Y), new Vector2(1f, 0f), new Vector2(0f, -1f));
+                foreach (var centreT in cornerT)
+                    StrokeSpan(drawList, outerMin, outerSize, r, centreT - armSpan, centreT + armSpan, col, thickness);
+
                 break;
             }
 
             case "Gradient":
             {
-                var tint = new Vector4(MathF.Min(1f, color.X + 0.35f), MathF.Min(1f, color.Y + 0.35f), MathF.Min(1f, color.Z + 0.35f), 1f);
-                var c1 = ImGui.GetColorU32(tint);
-                var topLeft = outerMin;
-                var topRight = new Vector2(outerMax.X, outerMin.Y);
-                var bottomRight = outerMax;
-                var bottomLeft = new Vector2(outerMin.X, outerMax.Y);
-                drawList.AddLine(topLeft, topRight, c1, thickness);
-                drawList.AddLine(topRight, bottomRight, col, thickness);
-                drawList.AddLine(bottomRight, bottomLeft, c1, thickness);
-                drawList.AddLine(bottomLeft, topLeft, col, thickness);
+                var tint = new Vector4(
+                    MathF.Min(1f, color.X + 0.35f),
+                    MathF.Min(1f, color.Y + 0.35f),
+                    MathF.Min(1f, color.Z + 0.35f), 1f);
+
+                const int segments = 56;
+                for (var i = 0; i < segments; i++)
+                {
+                    var p0 = Theme.RoundedRectPerimeterPoint(outerMin, outerSize, r, i / (float)segments);
+                    var p1 = Theme.RoundedRectPerimeterPoint(outerMin, outerSize, r, (i + 1f) / segments);
+
+                    var mid = (p0 + p1) * 0.5f;
+                    var blend = Math.Clamp((mid.Y - outerMin.Y) / MathF.Max(1f, outerSize.Y), 0f, 1f);
+                    var segColor = ImGui.GetColorU32(Vector4.Lerp(tint, color, blend));
+
+                    drawList.AddLine(p0, p1, segColor, thickness);
+                    drawList.AddCircleFilled(p0, thickness * 0.5f, segColor);
+                }
+
                 break;
             }
 
@@ -211,18 +232,28 @@ public static class DjCosmetics
 
             case "Brackets":
             {
-                var insetFromCorner = outerSize.X * 0.16f;
+                const float bracketSpan = 0.16f;
                 var tickDrop = thickness * 1.6f;
-                void DrawBracket(float y, float dropDir)
+                var centre = origin + (size / 2f);
+
+                void DrawBracket(float centreT)
                 {
-                    var lineStart = new Vector2(outerMin.X + insetFromCorner, y);
-                    var lineEnd = new Vector2(outerMax.X - insetFromCorner, y);
-                    drawList.AddLine(lineStart, lineEnd, col, thickness);
-                    drawList.AddLine(lineStart, lineStart + new Vector2(0f, tickDrop * dropDir), col, thickness);
-                    drawList.AddLine(lineEnd, lineEnd + new Vector2(0f, tickDrop * dropDir), col, thickness);
+                    StrokeSpan(drawList, outerMin, outerSize, r, centreT - bracketSpan, centreT + bracketSpan, col, thickness);
+
+                    foreach (var endT in new[] { centreT - bracketSpan, centreT + bracketSpan })
+                    {
+                        var end = Theme.RoundedRectPerimeterPoint(outerMin, outerSize, r, endT);
+
+                        var inward = centre - end;
+                        if (inward.LengthSquared() > 0.0001f)
+                            inward = Vector2.Normalize(inward);
+
+                        drawList.AddLine(end, end + (inward * tickDrop), col, thickness);
+                    }
                 }
-                DrawBracket(outerMin.Y, 1f);
-                DrawBracket(outerMax.Y, -1f);
+
+                DrawBracket(0f);
+                DrawBracket(0.5f);
                 break;
             }
 
@@ -265,16 +296,12 @@ public static class DjCosmetics
 
             case "Sentry":
             {
-                Span<Vector2> corners = [outerMin, new Vector2(outerMax.X, outerMin.Y), outerMax, new Vector2(outerMin.X, outerMax.Y)];
                 drawList.AddRect(outerMin, outerMax, ImGui.GetColorU32(new Vector4(color.X, color.Y, color.Z, 0.3f)), r, ImDrawFlags.None, thickness * 0.6f);
 
-                const float secondsPerCorner = 0.6f;
-                var cycle = (float)ImGui.GetTime() / secondsPerCorner;
-                var index = (int)cycle % corners.Length;
-                var localT = cycle - MathF.Floor(cycle);
-                var from = corners[index];
-                var to = corners[(index + 1) % corners.Length];
-                drawList.AddCircleFilled(Vector2.Lerp(from, to, localT), thickness, col);
+                const float secondsPerLap = 2.4f;
+                var lap = (float)(ImGui.GetTime() / secondsPerLap % 1.0);
+                drawList.AddCircleFilled(
+                    Theme.RoundedRectPerimeterPoint(outerMin, outerSize, r, lap), thickness, col);
                 break;
             }
 
@@ -346,6 +373,191 @@ public static class DjCosmetics
                 break;
             }
 
+
+            case "Comet":
+            {
+                drawList.AddRect(outerMin, outerMax, ImGui.GetColorU32(new Vector4(color.X, color.Y, color.Z, 0.22f)), r, ImDrawFlags.None, thickness * 0.5f);
+
+                const int tailSegments = 22;
+                const float tailLength = 0.22f;
+                var head = (float)(ImGui.GetTime() * 0.28 % 1.0);
+
+                for (var i = 0; i < tailSegments; i++)
+                {
+                    var falloff = 1f - (i / (float)tailSegments);
+                    var t0 = head - (tailLength * i / tailSegments);
+                    var t1 = head - (tailLength * (i + 1f) / tailSegments);
+                    var p0 = Theme.RoundedRectPerimeterPoint(outerMin, outerSize, r, t0);
+                    var p1 = Theme.RoundedRectPerimeterPoint(outerMin, outerSize, r, t1);
+                    var segColor = ImGui.GetColorU32(new Vector4(color.X, color.Y, color.Z, falloff * falloff));
+                    drawList.AddLine(p0, p1, segColor, thickness * (0.3f + (falloff * 0.9f)));
+                }
+
+                var headPos = Theme.RoundedRectPerimeterPoint(outerMin, outerSize, r, head);
+                drawList.AddCircleFilled(headPos, thickness * 1.3f, ImGui.GetColorU32(new Vector4(1f, 1f, 1f, 0.5f)));
+                drawList.AddCircleFilled(headPos, thickness * 0.8f, col);
+                break;
+            }
+
+            case "Orbit":
+            {
+                drawList.AddRect(outerMin, outerMax, ImGui.GetColorU32(new Vector4(color.X, color.Y, color.Z, 0.28f)), r, ImDrawFlags.None, thickness * 0.6f);
+
+                var spin = (float)(ImGui.GetTime() * 0.18 % 1.0);
+                for (var i = 0; i < 3; i++)
+                {
+                    var pos = Theme.RoundedRectPerimeterPoint(outerMin, outerSize, r, spin + (i / 3f));
+                    drawList.AddCircleFilled(pos, thickness * 1.15f, col);
+                    drawList.AddCircleFilled(pos, thickness * 0.5f, ImGui.GetColorU32(new Vector4(1f, 1f, 1f, 0.65f)));
+                }
+                break;
+            }
+
+            case "Ripple":
+            {
+                const int ripples = 3;
+                const float period = 2.6f;
+                var now = (float)ImGui.GetTime();
+
+                for (var i = 0; i < ripples; i++)
+                {
+                    var phase = ((now / period) + (i / (float)ripples)) % 1f;
+                    var spread = phase * 7f * scale;
+                    var fade = 1f - phase;
+
+                    drawList.AddRect(
+                        outerMin - new Vector2(spread), outerMax + new Vector2(spread),
+                        ImGui.GetColorU32(new Vector4(color.X, color.Y, color.Z, fade * 0.5f)),
+                        r + spread, ImDrawFlags.None, thickness * 0.7f * fade);
+                }
+
+                drawList.AddRect(outerMin, outerMax, col, r, ImDrawFlags.None, thickness * 0.8f);
+                break;
+            }
+
+            case "Scanner":
+            {
+                drawList.AddRect(outerMin, outerMax, ImGui.GetColorU32(new Vector4(color.X, color.Y, color.Z, 0.25f)), r, ImDrawFlags.None, thickness * 0.5f);
+
+                var sweep = (MathF.Sin((float)ImGui.GetTime() * 1.1f) + 1f) / 2f;
+                const float arc = 0.14f;
+                StrokeSpan(drawList, outerMin, outerSize, r, sweep - (arc / 2f), sweep + (arc / 2f), col, thickness);
+                break;
+            }
+
+            case "Fireflies":
+            {
+                drawList.AddRect(outerMin, outerMax, ImGui.GetColorU32(new Vector4(color.X, color.Y, color.Z, 0.2f)), r, ImDrawFlags.None, thickness * 0.5f);
+
+                var now = (float)ImGui.GetTime();
+                for (var i = 0; i < 7; i++)
+                {
+                    var slot = new Random(i * 2654435761u.GetHashCode());
+                    var speed = 0.03f + ((float)slot.NextDouble() * 0.05f);
+                    var offset = (float)slot.NextDouble();
+                    var t = (offset + (now * speed)) % 1f;
+                    var breathe = (MathF.Sin((now * 1.5f) + (i * 1.3f)) + 1f) / 2f;
+
+                    var pos = Theme.RoundedRectPerimeterPoint(outerMin, outerSize, r, t);
+                    drawList.AddCircleFilled(pos, (1f + (breathe * 2.2f)) * scale, col);
+                }
+                break;
+            }
+
+            case "Morse":
+            {
+                var shift = (float)(ImGui.GetTime() * 0.12 % 1.0);
+                ReadOnlySpan<float> pattern = [0.055f, 0.02f, 0.055f, 0.02f, 0.02f, 0.02f];
+
+                var cursor = 0f;
+                for (var i = 0; i < pattern.Length; i++)
+                {
+                    var mark = pattern[i];
+                    StrokeSpan(drawList, outerMin, outerSize, r, shift + cursor, shift + cursor + mark, col, thickness, 8);
+                    cursor += mark + 0.03f;
+                }
+                break;
+            }
+
+            case "Twin":
+            {
+                drawList.AddRect(outerMin, outerMax, ImGui.GetColorU32(new Vector4(color.X, color.Y, color.Z, 0.25f)), r, ImDrawFlags.None, thickness * 0.55f);
+
+                var travel = (float)(ImGui.GetTime() * 0.2 % 1.0);
+                var tint = new Vector4(MathF.Min(1f, color.X + 0.4f), MathF.Min(1f, color.Y + 0.4f), MathF.Min(1f, color.Z + 0.4f), 1f);
+
+                var a = Theme.RoundedRectPerimeterPoint(outerMin, outerSize, r, travel);
+                var b = Theme.RoundedRectPerimeterPoint(outerMin, outerSize, r, 0.5f - travel);
+
+                drawList.AddCircleFilled(a, thickness * 1.1f, col);
+                drawList.AddCircleFilled(b, thickness * 1.1f, ImGui.GetColorU32(tint));
+                break;
+            }
+
+            case "Tide":
+            {
+                const int segments = 56;
+                var now = (float)ImGui.GetTime();
+
+                for (var i = 0; i < segments; i++)
+                {
+                    var t0 = i / (float)segments;
+                    var t1 = (i + 1f) / segments;
+
+                    var swell = (MathF.Sin(((t0 * 2f) - (now * 0.35f)) * MathF.PI * 2f) + 1f) / 2f;
+                    var weight = thickness * (0.3f + (swell * 1.1f));
+
+                    var p0 = Theme.RoundedRectPerimeterPoint(outerMin, outerSize, r, t0);
+                    var p1 = Theme.RoundedRectPerimeterPoint(outerMin, outerSize, r, t1);
+
+                    drawList.AddLine(p0, p1, col, weight);
+                    drawList.AddCircleFilled(p0, weight * 0.5f, col);
+                }
+                break;
+            }
+
+            case "Static":
+            {
+                var bucket = (int)((float)ImGui.GetTime() * 5f);
+                var rng = new Random(bucket);
+
+                const int segments = 28;
+                for (var i = 0; i < segments; i++)
+                {
+                    var weight = 0.35f + ((float)rng.NextDouble() * 1.1f);
+                    StrokeSpan(drawList, outerMin, outerSize, r,
+                        i / (float)segments, (i + 1f) / segments, col, thickness * weight, 3);
+                }
+                break;
+            }
+
+            case "Aurora":
+            {
+                const int segments = 72;
+                var now = (float)ImGui.GetTime();
+
+                for (var i = 0; i < segments; i++)
+                {
+                    var t0 = i / (float)segments;
+                    var t1 = (i + 1f) / segments;
+
+                    var travelled = (t0 + (now * 0.06f)) % 1f;
+                    var triangle = 1f - MathF.Abs((travelled * 2f) - 1f);
+
+                    var hue = ((now * 0.03f) + (triangle * 0.5f)) % 1f;
+                    var rgb = HsvToRgb(hue, 0.55f, 1f);
+                    var blended = Vector4.Lerp(color, new Vector4(rgb.X, rgb.Y, rgb.Z, 1f), 0.75f);
+
+                    var p0 = Theme.RoundedRectPerimeterPoint(outerMin, outerSize, r, t0);
+                    var p1 = Theme.RoundedRectPerimeterPoint(outerMin, outerSize, r, t1);
+                    var segColor = ImGui.GetColorU32(blended);
+
+                    drawList.AddLine(p0, p1, segColor, thickness);
+                    drawList.AddCircleFilled(p0, thickness * 0.5f, segColor);
+                }
+                break;
+            }
+
             default:                drawList.AddRect(outerMin, outerMax, col, r, ImDrawFlags.None, thickness);
                 break;
         }
@@ -372,6 +584,18 @@ public static class DjCosmetics
     /// Draws a DJ's name at an explicit size (fontScale relative to the Header font's own natural size, same
     /// "AddText(font, size, ...)" technique as UiHelpers.DrawScaledIcon - no separate big-name font asset
     /// needed) in whichever text effect they picked.
+    public static float NameEffectDescent(string effect, float scale) => effect switch
+    {
+        "Underline" => 6.5f * scale,
+
+        "Neon" => 4f * scale,
+        "Scanline" => 4f * scale,
+
+        "Bob" => 3f * scale,
+
+        _ => 0f,
+    };
+
     public static void DrawDjName(
         Fonts fonts,
         string text,
@@ -627,6 +851,176 @@ public static class DjCosmetics
                     var cyclePos = (float)ImGui.GetTime() % (onSeconds + offSeconds);
                     if (cyclePos < onSeconds)
                         drawList.AddText(font, drawFontSize, pos, ImGui.GetColorU32(color), text);
+                    break;
+                }
+
+
+                case "Neon":
+                {
+                    var breathe = 0.35f + (((MathF.Sin((float)ImGui.GetTime() * 1.3f) + 1f) / 2f) * 0.5f);
+
+                    for (var ring = 3; ring >= 1; ring--)
+                    {
+                        var spread = ring * 1.1f * scale;
+                        var halo = ImGui.GetColorU32(new Vector4(color.X, color.Y, color.Z, (breathe * 0.22f) / ring));
+
+                        drawList.AddText(font, drawFontSize, pos + new Vector2(spread, 0f), halo, text);
+                        drawList.AddText(font, drawFontSize, pos + new Vector2(-spread, 0f), halo, text);
+                        drawList.AddText(font, drawFontSize, pos + new Vector2(0f, spread), halo, text);
+                        drawList.AddText(font, drawFontSize, pos + new Vector2(0f, -spread), halo, text);
+                    }
+
+                    drawList.AddText(font, drawFontSize, pos, ImGui.GetColorU32(color), text);
+                    break;
+                }
+
+                case "Scanline":
+                {
+                    var width = ImGui.CalcTextSize(text).X * fontScale;
+                    var sweep = (float)(ImGui.GetTime() * 0.45 % 1.0);
+                    var bandY = pos.Y - (drawFontSize * 0.2f) + (sweep * drawFontSize * 1.4f);
+                    var bandHeight = drawFontSize * 0.22f;
+
+                    drawList.AddText(font, drawFontSize, pos, ImGui.GetColorU32(color), text);
+
+                    drawList.PushClipRect(new Vector2(pos.X - 2f, bandY), new Vector2(pos.X + width + 2f, bandY + bandHeight), true);
+                    drawList.AddText(font, drawFontSize, pos,
+                        ImGui.GetColorU32(Vector4.Lerp(color, new Vector4(1f, 1f, 1f, 1f), 0.75f)), text);
+                    drawList.PopClipRect();
+                    break;
+                }
+
+                case "Drift":
+                {
+                    var spread = ((MathF.Sin((float)ImGui.GetTime() * 0.9f) + 1f) / 2f) * 2.4f * scale;
+                    var x = pos.X;
+
+                    for (var i = 0; i < text.Length; i++)
+                    {
+                        var ch = text[i].ToString();
+                        drawList.AddText(font, drawFontSize, new Vector2(x, pos.Y), ImGui.GetColorU32(color), ch);
+                        x += (ImGui.CalcTextSize(ch).X * fontScale) + spread;
+                    }
+                    break;
+                }
+
+                case "Bob":
+                {
+                    var amplitude = MathF.Sin((float)ImGui.GetTime() * 1.6f) * 2.6f * scale;
+                    var x = pos.X;
+
+                    for (var i = 0; i < text.Length; i++)
+                    {
+                        var ch = text[i].ToString();
+                        var lift = amplitude * MathF.Sin((i / (float)MathF.Max(1, text.Length - 1)) * MathF.PI);
+                        drawList.AddText(font, drawFontSize, new Vector2(x, pos.Y + lift), ImGui.GetColorU32(color), ch);
+                        x += ImGui.CalcTextSize(ch).X * fontScale;
+                    }
+                    break;
+                }
+
+                case "Sheen":
+                {
+                    var x = pos.X;
+                    var totalWidth = ImGui.CalcTextSize(text).X * fontScale;
+                    var cycle = (float)(ImGui.GetTime() * 0.35 % 1.0);
+                    var sweep = (cycle * 2.4f) - 0.7f;
+
+                    for (var i = 0; i < text.Length; i++)
+                    {
+                        var ch = text[i].ToString();
+                        var charWidth = ImGui.CalcTextSize(ch).X * fontScale;
+                        var charT = totalWidth > 0f ? ((x - pos.X) + (charWidth / 2f)) / totalWidth : 0f;
+                        var glint = MathF.Max(0f, 1f - (MathF.Abs(charT - sweep) * 9f));
+                        var segColor = Vector4.Lerp(color, new Vector4(1f, 1f, 1f, 1f), glint);
+
+                        drawList.AddText(font, drawFontSize, new Vector2(x, pos.Y), ImGui.GetColorU32(segColor), ch);
+                        x += charWidth;
+                    }
+                    break;
+                }
+
+                case "Echo":
+                {
+                    var drift = MathF.Sin((float)ImGui.GetTime() * 1.1f) * 3.5f * scale;
+
+                    for (var ghost = 3; ghost >= 1; ghost--)
+                    {
+                        var offset = drift * ghost * 0.6f;
+                        drawList.AddText(font, drawFontSize, pos + new Vector2(offset, 0f),
+                            ImGui.GetColorU32(new Vector4(color.X, color.Y, color.Z, 0.26f / ghost)), text);
+                    }
+
+                    drawList.AddText(font, drawFontSize, pos, ImGui.GetColorU32(color), text);
+                    break;
+                }
+
+                case "Prism":
+                {
+                    var split = ((MathF.Sin((float)ImGui.GetTime() * 0.8f) + 1f) / 2f) * 1.8f * scale;
+
+                    drawList.AddText(font, drawFontSize, pos + new Vector2(-split, 0f),
+                        ImGui.GetColorU32(new Vector4(1f, 0.25f, 0.3f, 0.55f)), text);
+                    drawList.AddText(font, drawFontSize, pos + new Vector2(split, 0f),
+                        ImGui.GetColorU32(new Vector4(0.25f, 0.8f, 1f, 0.55f)), text);
+                    drawList.AddText(font, drawFontSize, pos, ImGui.GetColorU32(color), text);
+                    break;
+                }
+
+                case "Ember":
+                {
+                    var x = pos.X;
+                    var now = (float)ImGui.GetTime();
+                    var hot = new Vector4(1f, 0.62f, 0.22f, 1f);
+
+                    for (var i = 0; i < text.Length; i++)
+                    {
+                        var ch = text[i].ToString();
+                        var heat = (MathF.Sin((now * 1.4f) + (i * 0.9f)) + 1f) / 2f;
+                        var segColor = Vector4.Lerp(color, hot, heat * 0.7f);
+
+                        drawList.AddText(font, drawFontSize, new Vector2(x, pos.Y), ImGui.GetColorU32(segColor), ch);
+                        x += ImGui.CalcTextSize(ch).X * fontScale;
+                    }
+                    break;
+                }
+
+                case "Sonar":
+                {
+                    var x = pos.X;
+                    var totalWidth = ImGui.CalcTextSize(text).X * fontScale;
+                    const float period = 2.8f;
+                    var phase = (float)(ImGui.GetTime() % period) / period;
+                    var ping = phase * 1.6f;
+
+                    for (var i = 0; i < text.Length; i++)
+                    {
+                        var ch = text[i].ToString();
+                        var charWidth = ImGui.CalcTextSize(ch).X * fontScale;
+                        var charT = totalWidth > 0f ? ((x - pos.X) + (charWidth / 2f)) / totalWidth : 0f;
+                        var lit = MathF.Max(0f, 1f - (MathF.Abs(charT - ping) * 5f));
+                        var segColor = Vector4.Lerp(color, new Vector4(1f, 1f, 1f, 1f), lit * 0.85f);
+
+                        drawList.AddText(font, drawFontSize, new Vector2(x, pos.Y), ImGui.GetColorU32(segColor), ch);
+                        x += charWidth;
+                    }
+                    break;
+                }
+
+                case "Stencil":
+                {
+                    var x = pos.X;
+                    var step = (int)((float)ImGui.GetTime() * 2.2f);
+
+                    for (var i = 0; i < text.Length; i++)
+                    {
+                        var ch = text[i].ToString();
+                        var lit = ((i + step) % 2) == 0;
+                        var segColor = lit ? color : new Vector4(color.X, color.Y, color.Z, 0.35f);
+
+                        drawList.AddText(font, drawFontSize, new Vector2(x, pos.Y), ImGui.GetColorU32(segColor), ch);
+                        x += ImGui.CalcTextSize(ch).X * fontScale;
+                    }
                     break;
                 }
 

@@ -205,6 +205,12 @@ public sealed class Plugin : IDalamudPlugin
 
     private void OnDeckCommand(string command, string args)
     {
+        if (Configuration.LastChosenRole != UserRole.Dj)
+        {
+            Configuration.LastChosenRole = UserRole.Dj;
+            Configuration.Save();
+        }
+
         djDeckWindow.ShowDeckImmediately();
 
         if (Configuration.UseNewDesign)

@@ -120,4 +120,75 @@ public static class Chrome
     /// Vertically centres text in a row of `height` starting at `top`, snapped.
     public static Vector2 CenterY(float x, float top, float height, float textHeight)
         => Snap(new Vector2(x, top + ((height - textHeight) * 0.5f)));
+
+    /// Width of `text` drawn with `tracking` units of extra space after every character.
+    public static float TrackedWidth(string text, float tracking)
+    {
+        if (string.IsNullOrEmpty(text))
+            return 0f;
+
+        var width = 0f;
+        foreach (var character in text)
+            width += ImGui.CalcTextSize(character.ToString()).X + tracking;
+
+        return width - tracking;
+    }
+
+    /// The vertical ink bounds of `text` in the current font, relative to the position it would be drawn at,
+    /// or null if nothing measurable is in it.
+    public static (float Top, float Bottom)? TextInk(string text)
+    {
+        var font = ImGui.GetFont();
+        if (font.IsNull || font.FontSize <= 0f || string.IsNullOrEmpty(text))
+            return null;
+
+        var top = float.MaxValue;
+        var bottom = float.MinValue;
+
+        foreach (var character in text)
+        {
+            if (char.IsWhiteSpace(character))
+                continue;
+
+            var glyph = ImGui.FindGlyph(font, character);
+            if (glyph.IsNull)
+                continue;
+
+            if (glyph.Y0 < top)
+                top = glyph.Y0;
+
+            if (glyph.Y1 > bottom)
+                bottom = glyph.Y1;
+        }
+
+        return bottom > top ? (top, bottom) : null;
+    }
+
+    /// Letter-spaced text whose INK is centred on `centreY`, so it lines up with an icon centred the same
+    /// way.
+    public static void TrackedTextCenteredOnInk(
+        ImDrawListPtr drawList, float x, float centreY, uint color, string text, float tracking)
+    {
+        float y;
+
+        if (TextInk(text) is { } ink)
+            y = centreY - ((ink.Top + ink.Bottom) * 0.5f);
+        else
+            y = centreY - (ImGui.GetTextLineHeight() * 0.5f);
+
+        TrackedText(drawList, new Vector2(x, y), color, text, tracking);
+    }
+
+    /// Letter-spaced text, drawn one glyph at a time.
+    public static void TrackedText(ImDrawListPtr drawList, Vector2 position, uint color, string text, float tracking)
+    {
+        var pen = position.X;
+
+        foreach (var character in text)
+        {
+            var glyph = character.ToString();
+            drawList.AddText(Snap(new Vector2(pen, position.Y)), color, glyph);
+            pen += ImGui.CalcTextSize(glyph).X + tracking;
+        }
+    }
 }

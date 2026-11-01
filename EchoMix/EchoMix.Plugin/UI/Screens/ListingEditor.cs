@@ -397,7 +397,7 @@ public sealed class ListingEditor
         var box = MathF.Round(116f * Metrics.Scale);
         var origin = ImGui.GetCursorScreenPos();
 
-        DrawImageWell(preview, origin, new Vector2(box, box));
+        DrawImageWell(preview, origin, new Vector2(box, box), circular: true);
         ImGui.Dummy(new Vector2(box, box));
 
         ImGui.SameLine(0f, Metrics.Lg);
@@ -411,7 +411,7 @@ public sealed class ListingEditor
         using (TypeScale.Caption())
         {
             using var _ = Sty.New().Col(ImGuiCol.Text, Semantic.TextTertiary);
-            ImGui.TextWrapped("Square. Shown everywhere your name appears. "
+            ImGui.TextWrapped("Shown as a circle everywhere your name appears. "
                 + $"{ShowImageProcessor.DjAvatarSize}x{ShowImageProcessor.DjAvatarSize} works best.");
         }
 
@@ -471,22 +471,23 @@ public sealed class ListingEditor
     }
 
     /// The image, or an empty well in its place.
-    private static void DrawImageWell(IDalamudTextureWrap? preview, Vector2 pos, Vector2 size)
+    private static void DrawImageWell(IDalamudTextureWrap? preview, Vector2 pos, Vector2 size, bool circular = false)
     {
         var drawList = ImGui.GetWindowDrawList();
         var min = Chrome.Snap(pos);
         var max = Chrome.Snap(pos + size);
+        var rounding = circular ? MathF.Min(size.X, size.Y) * 0.5f : Metrics.RadiusSoft;
 
         if (preview != null)
         {
             drawList.AddImageRounded(preview.Handle, min, max, Vector2.Zero, Vector2.One,
-                ImGui.GetColorU32(Vector4.One), Metrics.RadiusSoft);
+                ImGui.GetColorU32(Vector4.One), rounding);
             drawList.AddRect(min, max, ImGui.GetColorU32(Elevation.LineStrong),
-                Metrics.RadiusSoft, ImDrawFlags.None, Metrics.Hairline);
+                rounding, ImDrawFlags.None, Metrics.Hairline);
             return;
         }
 
-        Elevation.DrawSurface(drawList, min, max, Elevation.Sunken, Metrics.RadiusSoft,
+        Elevation.DrawSurface(drawList, min, max, Elevation.Sunken, rounding,
             Elevation.ShadowSpec.None, topEdge: false, Elevation.Line);
 
         using (TypeScale.IconLarge())
@@ -535,21 +536,23 @@ public sealed class ListingEditor
         var box = new Vector2(avatar, avatar);
         var texture = Window.DjEditAvatarPreview;
 
+        var avatarRounding = avatar * 0.5f;
+
         if (texture != null)
         {
             drawList.AddImageRounded(texture.Handle, avatarPos, avatarPos + box, Vector2.Zero, Vector2.One,
-                ImGui.GetColorU32(Vector4.One), Metrics.RadiusCard);
+                ImGui.GetColorU32(Vector4.One), avatarRounding);
         }
         else
         {
-            drawList.AddRectFilled(avatarPos, avatarPos + box, ImGui.GetColorU32(Elevation.Raised), Metrics.RadiusCard);
+            drawList.AddRectFilled(avatarPos, avatarPos + box, ImGui.GetColorU32(Elevation.Raised), avatarRounding);
 
             using (TypeScale.IconLarge())
                 UiHelpers.DrawScaledIcon(drawList, FontAwesomeIcon.User,
                     Chrome.Snap(avatarPos + (box * 0.5f)), ImGui.GetColorU32(Semantic.TextDisabled));
         }
 
-        DjCosmetics.DrawAvatarFrame(drawList, avatarPos, box, Metrics.RadiusCard,
+        DjCosmetics.DrawAvatarFrame(drawList, avatarPos, box, avatarRounding,
             frameColor, Edit.DjEditFrameStyle, Metrics.Scale);
 
         var nameLeft = avatarPos.X + avatar + Metrics.Xxl;
@@ -565,9 +568,12 @@ public sealed class ListingEditor
         DjCosmetics.DrawDjName(plugin.Fonts, UiHelpers.TruncateToWidth(shown, nameWidth),
             nameColor, Edit.DjEditNameEffect, 1.1f, Metrics.Scale);
 
+        var captionTop = origin.Y + (height * 0.5f) + (Metrics.Sm * 2f)
+            + DjCosmetics.NameEffectDescent(Edit.DjEditNameEffect, Metrics.Scale);
+
         using (TypeScale.Caption())
             Chrome.Text(drawList,
-                new Vector2(nameLeft, origin.Y + (height * 0.5f) + (Metrics.Sm * 2f)),
+                new Vector2(nameLeft, captionTop),
                 ImGui.GetColorU32(Semantic.TextTertiary),
                 UiHelpers.TruncateToWidth($"{Edit.DjEditFrameStyle} frame  ·  {Edit.DjEditNameEffect} name", nameWidth));
 

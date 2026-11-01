@@ -206,6 +206,8 @@ public sealed class EchoMixShellWindow : Window
     {
         DrawBody();
         DrawFrame();
+
+        ReleaseRailHoldIfIdle();
     }
 
     private void DrawBody()
@@ -1147,8 +1149,49 @@ public sealed class EchoMixShellWindow : Window
 
     private void SetRailExpanded(bool expanded)
     {
+        railRestoreTo = null;
+
         Router.RailExpanded = expanded;
         plugin.Configuration.ShellRailExpanded = expanded;
         plugin.Configuration.Save();
+    }
+
+    /// Whether a screen is currently asking for the rail to be out of its way.
+    private bool railHoldActive;
+
+    /// What to put the rail back to when the hold ends.
+    private bool? railRestoreTo;
+
+    private bool railHeldThisFrame;
+
+    /// Collapses the rail for as long as a screen keeps asking, and puts it back when it stops.
+    public void HoldRailCollapsed()
+    {
+        railHeldThisFrame = true;
+
+        if (railHoldActive)
+            return;
+
+        railHoldActive = true;
+        railRestoreTo = Router.RailExpanded;
+        Router.RailExpanded = false;
+    }
+
+    private void ReleaseRailHoldIfIdle()
+    {
+        if (railHeldThisFrame)
+        {
+            railHeldThisFrame = false;
+            return;
+        }
+
+        if (!railHoldActive)
+            return;
+
+        if (railRestoreTo is { } previous)
+            Router.RailExpanded = previous;
+
+        railHoldActive = false;
+        railRestoreTo = null;
     }
 }
