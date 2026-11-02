@@ -679,7 +679,7 @@ public sealed class DjProfileSection
 
         var zone = AvailabilitySlots.ZoneOf(profile.Availability);
 
-        Surfaces.SectionHeader(zone == null ? "Usually On" : $"Usually On  Â·  {zone}", width: width);
+        Surfaces.SectionHeader(zone == null ? "Usually On" : $"Usually On  ·  {zone}", width: width);
         Surfaces.Gap(Metrics.Md);
 
         var labels = DjDeckWindow.DjAvailabilityDays;

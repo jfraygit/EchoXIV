@@ -12,6 +12,13 @@ public static class ChangelogData
 {
     public static readonly ChangelogEntry[] Entries =
     {
+        new("2.0.1.2", new[]
+        {
+            new ChangelogGroup("Fixed", new[]
+            {
+                "A stray character showed up next to the timezone in Usually On on a DJ profile.",
+            }),
+        }),
         new("2.0.1.1", new[]
         {
             new ChangelogGroup("Added", new[]
