@@ -12,6 +12,16 @@ public static class ChangelogData
     /// not read", and lighting it up for a build that was never published teaches people to ignore it.
     public static readonly ChangelogEntry[] Entries =
     [
+        new("2.0.0.6",
+        [
+            new ChangelogGroup("Fixed",
+            [
+                "The opening animation played every time you logged in to a character, as though "
+                + "you had just turned EchoGlam on. It now plays only when you enable it from "
+                + "Dalamud.",
+            ]),
+        ]),
+
         new("2.0.0.5",
         [
             new ChangelogGroup("Changed",

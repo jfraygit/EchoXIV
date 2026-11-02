@@ -143,7 +143,7 @@ public sealed class MainWindow : Window
 
         minimised = Config.StartMinimised;
 
-        introRunning = true;
+        introRunning = Plugin.ClientState.IsLoggedIn;
 
         animatedSize = TargetSize;
 
